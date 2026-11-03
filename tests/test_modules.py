@@ -72,6 +72,9 @@ EXPECTED_CTX_FUNCTIONS = [
     "go_to_tab", "render_all", "render_orders", "edit_notes", "update_catalogue_badges",
     # Task 8 : écran catalogue (view_catalogue) et fonctions de main() qu'il utilise
     "render_catalogue", "apply_catalogue_columns", "apply_filter_layout", "open_catalogue_manager",
+    # Task 9 : écran commandes (view_orders) et fonctions de main() qu'il utilise
+    "create_order_dialog", "archive_order", "open_drawer", "close_drawer",
+    "open_admin", "replace_catalogue", "open_backup_view",
 ]
 
 # Widgets partagés (vérifiés avec assertIsNotNone).
@@ -80,6 +83,7 @@ EXPECTED_CTX_WIDGETS = [
     "cart_tab", "compact_cart_btn", "order_info", "archive_banner",
     "content_catalogue", "catalogue_heading", "catalogue_dropdown", "category_dropdown", "catalogue_info",
     "browse_row", "filter_button", "filter_details",
+    "drawer", "appbar_title",
 ]
 
 
