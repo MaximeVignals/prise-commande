@@ -58,7 +58,10 @@ Kept whole:
 - `add_article_dialog` (64): fields, `validate` closure and dialog form one unit; extracting the fields alone would leave it over 50.
 - `ask_photo_label` (55): `save` / `remove` closures share the field and photo with the dialog.
 - `parse_catalogue` (56): the per-row loop uses `continue` to build the skipped-line warnings; splitting it would restructure control flow.
-- Not reviewed for splitting (timebox): `show_import_screen` (95), `restore_backup` (65), `make_theme` (64), `request_restore` (61).
+- `show_import_screen` (95): a closure-heavy screen builder. Its four handlers share `page`, `file_picker` and `error_text`, and about 45 lines are one `page.add(...)` widget tree that wires up three of those handlers. Follow-up: that tree could become a helper that takes the three handlers and `error_text`. It contains no loops or lambdas that capture loop variables.
+- `restore_backup` (65): one transactional sequence. It takes the recovery copy first, then merges, writes the recovery ZIP, stages the files, swaps them in and rolls back on error. `originals`, `touched`, `stage` and `recovery` are used across the `try`/rollback, which spans the second half. Follow-up: the order-merge loop (`mapping`/`updates`/`reserved_ids`) is contiguous and could become `_merge_orders(root, snapshot, merged)`.
+- `make_theme` (64): a declarative theme table, a single `ColorScheme` plus a single `Theme(...)` call. It has no logic to separate.
+- `request_restore` (61): the error handling spans the whole flow. The pick/inspect `try` returns early, and the nested `confirm` closure shares `snapshot`, `restore_button`, `restore_error` and `dismissed` with the dialog built after it.
 
 ## Bugs / risks (not fixed)
 
@@ -67,9 +70,12 @@ Kept whole:
 - `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
 - Seen once in the Task 12 web smoke (not reproduced after reload, not investigated against the pre-refactor build): after three quick add-to-cart clicks the cart showed a duplicate row for one article while the totals were right.
-- Change required by the move (Task 12): `scripts/preview_ui.py` import paths only (`app.<name>` -> `catalogue`/`storage`/`config`/`backup`/`import_screen`), because main.py no longer re-exports them.
 - `shell.install` was ~270 lines; Task 13 moved the app bar and the startup tail out (now 234, see "Long functions").
 - `backup.py` still spells `"commandes.json"`, `"catalogue_perso.json"` and `"sauvegardes/avant-restauration-…zip"` itself (it is a standalone module with no app imports). `config.py` holds the same values (`ORDERS_FILENAME`, `PREFS_FILENAME`, `BACKUPS_DIRNAME`, `RECOVERY_BACKUP_PATTERN`): change both together.
+
+## Changes required by the move
+
+- Task 12: in `scripts/preview_ui.py`, only the import paths changed (`app.<name>` -> `catalogue`/`storage`/`config`/`backup`/`import_screen`), because main.py no longer re-exports those names.
 
 ## Design notes
 
