@@ -230,6 +230,25 @@ def install(ctx: AppContext) -> None:
     ctx.page.on_resize = on_window_resize
     ctx.page.on_media_change = on_media_change
 
+    install_appbar(ctx)
+    ctx.page.drawer = ctx.drawer
+
+    empty_state = ft.ListView(expand=True, controls=[ui.empty(
+        ft.Icons.RECEIPT_LONG, "Votre prochaine commande commence ici",
+        "Un client, une salle, un projet. Créez une commande, choisissez votre matériel "
+        "et retrouvez tous vos éléments au même endroit.",
+        ui.button(content="Créer une commande", icon=ft.Icons.ADD, on_click=ctx.create_order_dialog),
+    )], padding=24)
+    body = ft.Container(expand=True, content=workspace, on_size_change=on_workspace_size,
+                        size_change_interval=100)
+    ctx.page.add(ft.SafeArea(expand=True, content=body, maintain_bottom_view_padding=True))
+    ctx.render_catalogue()
+    render_all()
+
+    finish_startup(ctx)
+
+
+def install_appbar(ctx: AppContext) -> None:
     def toggle_theme(e=None):
         dark = ctx.page.theme_mode == ft.ThemeMode.DARK or (
             ctx.page.theme_mode == ft.ThemeMode.SYSTEM
@@ -251,20 +270,9 @@ def install(ctx: AppContext) -> None:
             on_click=ctx.create_order_dialog,
         )],
     )
-    ctx.page.drawer = ctx.drawer
 
-    empty_state = ft.ListView(expand=True, controls=[ui.empty(
-        ft.Icons.RECEIPT_LONG, "Votre prochaine commande commence ici",
-        "Un client, une salle, un projet. Créez une commande, choisissez votre matériel "
-        "et retrouvez tous vos éléments au même endroit.",
-        ui.button(content="Créer une commande", icon=ft.Icons.ADD, on_click=ctx.create_order_dialog),
-    )], padding=24)
-    body = ft.Container(expand=True, content=workspace, on_size_change=on_workspace_size,
-                        size_change_interval=100)
-    ctx.page.add(ft.SafeArea(expand=True, content=body, maintain_bottom_view_padding=True))
-    ctx.render_catalogue()
-    render_all()
 
+def finish_startup(ctx: AppContext) -> None:
     # Sauvegardes de démarrage : seulement si quelque chose a été converti ou créé
     if ctx.migrated:
         ctx.persist()
