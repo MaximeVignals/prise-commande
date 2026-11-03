@@ -1,0 +1,44 @@
+# --- Private data: the real catalogue and its rules live in ..\prive, outside this repo.
+#     The build script copies them into src/assets only while building.
+src/assets/catalogue materiel.xlsx
+src/assets/regles_catalogue.json
+*.xls
+*.xlsm
+*.csv
+*.ods
+# Any spreadsheet except the made-up sample
+*.xlsx
+!src/assets/catalogue exemple.xlsx
+
+# --- Signing key and passwords
+*.jks
+*.keystore
+*.p12
+*.pfx
+mot_de_passe*
+signature_android/
+
+# --- Orders, photos and app storage
+commandes*.json
+catalogue_perso*.json
+storage/
+
+# --- Build output
+build/
+releases/
+*.apk
+*.aab
+*.zip
+
+# --- Python / tools
+__pycache__/
+*.pyc
+.venv/
+venv/
+.flet/
+
+# --- Claude Code (local setup, not part of the project)
+.claude/
+.mcp.json
+CLAUDE.md
+CLAUDE.local.md

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Refuses a commit that contains a spreadsheet (other than the made-up sample),
+# the catalogue rules, a signing key or a password file.
+bad=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -iE '\.(xlsx|xls|xlsm|csv|ods|jks|keystore|p12|pfx|apk|aab)$|regles_catalogue\.json$|mot_de_passe|commandes.*\.json$' \
+  | grep -vx 'src/assets/catalogue exemple.xlsx')
+if [ -n "$bad" ]; then
+  echo "COMMIT REFUSE : fichiers prives dans le commit :"
+  echo "$bad" | sed 's/^/  - /'
+  echo "Retirez-les avec : git restore --staged \"<fichier>\""
+  exit 1
+fi

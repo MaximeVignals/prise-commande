@@ -1,0 +1,7 @@
+# Store text with LF in the repo; Windows scripts are checked out with CRLF.
+* text=auto
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+.githooks/* text eol=lf
+*.png binary
+*.xlsx binary

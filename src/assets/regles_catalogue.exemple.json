@@ -1,0 +1,11 @@
+{
+  "_aide": "Example rules for the sample catalogue. To use your own, create regles_catalogue.json next to your catalogue (it is git-ignored). Keys: textes_retires (text removed from category titles), categories_renommees (rename a category when its title equals / contains a text), mots_en_majuscules (words kept in capitals), sections_exclues (a bold title containing one of these words skips its whole section), masques_par_defaut (items containing one of these words are hidden on first launch).",
+  "textes_retires": ["(EXEMPLE)"],
+  "categories_renommees": [
+    {"contient": "PACK CLAVIER", "nom": "Clavier & Souris"},
+    {"egal": "PORTABLES", "nom": "Pc portable"}
+  ],
+  "mots_en_majuscules": ["TV", "PC", "USB", "4K"],
+  "sections_exclues": ["archives"],
+  "masques_par_defaut": ["obsolete"]
+}
