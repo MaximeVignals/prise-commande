@@ -81,6 +81,8 @@ EXPECTED_CTX_FUNCTIONS = [
     "render_catalogues",
     # Task 11 : écran photos (view_photos)
     "render_photos", "build_camera_view", "start_camera",
+    # Task 11 : écran sauvegarde (view_backup) et main() qu'il relance après restauration
+    "main",
 ]
 
 # Widgets partagés (vérifiés avec assertIsNotNone).
@@ -92,6 +94,7 @@ EXPECTED_CTX_WIDGETS = [
     "drawer", "appbar_title",
     "admin_catalogue", "admin_category", "admin_view", "catalogues_view", "file_picker",
     "photos_tab", "content_photos", "photo_heading", "is_mobile", "camera_available", "camera_state",
+    "backup_view",
 ]
 
 
