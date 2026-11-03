@@ -7,6 +7,7 @@ import flet as ft
 if __package__:
     from . import ui, backup, storage
     from .storage import storage_dir
+    from .config import BACKUPS_DIRNAME, RECOVERY_BACKUP_PATTERN
     from .import_screen import request_restore
     from .context import AppContext
 else:
@@ -14,6 +15,7 @@ else:
     import backup
     import storage
     from storage import storage_dir
+    from config import BACKUPS_DIRNAME, RECOVERY_BACKUP_PATTERN
     from import_screen import request_restore
     from context import AppContext
 
@@ -29,7 +31,7 @@ def install(ctx: AppContext) -> None:
         ctx.refresh()
         try:
             if recovery:
-                path = max((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"),
+                path = max((storage_dir() / BACKUPS_DIRNAME).glob(RECOVERY_BACKUP_PATTERN),
                            key=lambda path: path.stat().st_mtime_ns)
                 if not path.resolve().is_relative_to(storage_dir().resolve()):
                     raise ValueError("La copie de secours est située hors du stockage de l'application.")
@@ -51,7 +53,7 @@ def install(ctx: AppContext) -> None:
             backup_status.value = f"Sauvegarde impossible : {err}"
         finally:
             export_backup_btn.disabled = restore_backup_btn.disabled = False
-            recovery_backup_btn.disabled = not any((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"))
+            recovery_backup_btn.disabled = not any((storage_dir() / BACKUPS_DIRNAME).glob(RECOVERY_BACKUP_PATTERN))
             backup_progress.visible = False
             ctx.refresh()
 
@@ -69,7 +71,7 @@ def install(ctx: AppContext) -> None:
     restore_backup_btn = ft.OutlinedButton(content="Restaurer une sauvegarde", icon=ft.Icons.RESTORE,
                                             on_click=restore_from_view)
     recovery_backup_btn = ft.TextButton(content="Exporter la dernière copie de secours", icon=ft.Icons.HISTORY,
-        on_click=export_recovery, disabled=not any((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip")))
+        on_click=export_recovery, disabled=not any((storage_dir() / BACKUPS_DIRNAME).glob(RECOVERY_BACKUP_PATTERN)))
     backup_view = ft.View(route="/sauvegarde", padding=16,
         appbar=ft.AppBar(title=ui.text("Sauvegarde et restauration")),
         controls=[ft.SafeArea(expand=True, content=ft.ListView(spacing=16, controls=[

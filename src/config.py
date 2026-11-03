@@ -5,6 +5,8 @@ CATALOGUE_EXTENSIONS = (".xlsx", ".csv")
 SAMPLE_CATALOGUE_FILENAME = "catalogue_modele.xlsx"  # catalogue fictif fourni avec le code (même format)
 ORDERS_FILENAME = "commandes.json"
 PREFS_FILENAME = "catalogue_perso.json"  # articles masqués, prix modifiés, articles ajoutés
+BACKUPS_DIRNAME = "sauvegardes"  # copies de secours créées avant une restauration (voir backup.py)
+RECOVERY_BACKUP_PATTERN = "avant-restauration-*.zip"
 
 # Format du catalogue (voir FORMAT_CATALOGUE.md) : 1re feuille (ou CSV), ligne 1 = en-têtes
 # « Catégorie | Article | Prix | Masqué ». Les 3 premières sont obligatoires, « Masqué » est facultative.
