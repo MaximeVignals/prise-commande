@@ -21,6 +21,7 @@ Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 - `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
 - Seen once in the Task 12 web smoke (not reproduced after reload, not investigated against the pre-refactor build): after three quick add-to-cart clicks the cart showed a duplicate row for one article while the totals were right.
+- Change required by the move (Task 12): `scripts/preview_ui.py` import paths only (`app.<name>` -> `catalogue`/`storage`/`config`/`backup`/`import_screen`), because main.py no longer re-exports them.
 - `shell.install` is ~270 lines (layout, routes, resize handlers, app bar in one function); splitting is Task 13.
 
 ## Design notes

@@ -17,6 +17,7 @@ os.environ["FLET_ASSETS_DIR"] = str(ROOT / "src" / "assets")
 
 import flet as ft
 from src import main as app
+from src import backup, catalogue, config, import_screen, storage
 
 
 def walk(value):
@@ -36,18 +37,18 @@ def walk(value):
 
 
 async def preview(page):
-    app.install_catalogue(app.sample_catalogue_path().read_bytes(), ".xlsx")
-    entries = app.load_catalogue()
-    prefs, _ = app.load_prefs(entries)
+    catalogue.install_catalogue(catalogue.sample_catalogue_path().read_bytes(), ".xlsx")
+    entries = catalogue.load_catalogue()
+    prefs, _ = storage.load_prefs(entries)
     prefs["favorites"] = {entries[0]["Cle"]}
     prefs["recent"] = [entry["Cle"] for entry in entries[:3]]
     prefs["catalogue_items"] = entries + [{"Cle": "CAT:preview-service", "Nom_Article": "Installation de démonstration",
         "Catalogue": "Prestations démo", "Categorie": "Installation", "Prix_Excel": 90, "Masque": False}]
-    app.save_prefs(prefs)
+    storage.save_prefs(prefs)
     items = {entry["Cle"]: {"Nom": entry["Nom_Article"], "Prix": entry["Prix_Excel"], "quantite": i}
              for i, entry in enumerate(entries[:2], 1)}
     next(iter(items.values()))["note"] = "Vérifier HDMI"
-    app.save_orders({"preview": {"name": "Cabinet Horizon · Salle 2", "created": "2026-11-03T12:00",
+    storage.save_orders({"preview": {"name": "Cabinet Horizon · Salle 2", "created": "2026-11-03T12:00",
                                  "notes": "Livraison groupée · Salle 2", "items": items, "photos": []},
                      "archive-preview": {"name": "Ancien projet démo", "created": "2026-10-01T12:00",
                                          "archived": True, "items": {}, "photos": []}}, "preview")
@@ -109,7 +110,7 @@ async def preview(page):
         await mode.on_change()
         await capture(name)
     selector = next(c for c in walk(page.views) if isinstance(c, ft.Dropdown) and c.label == "Catalogue")
-    selector.value = app.ALL_CATALOGUES
+    selector.value = config.ALL_CATALOGUES
     await selector.on_select()
     await capture("phone-all-catalogues")
     selector.value = ""
@@ -170,14 +171,14 @@ async def preview(page):
     # Native restore smoke test: fake picker + the real confirmation/dismissal
     # flow. All source, destination and recovery data remain in ui-preview.
     await page.push_route("/sauvegarde")
-    data = app.backup.create_backup(app.storage_dir())
+    data = backup.create_backup(storage.storage_dir())
     async def pick_backup(**kwargs):
         return [SimpleNamespace(bytes=data, path=None, name="demo-backup.zip")]
     async def restored():
         await page.push_route("/")
         page.controls.clear()
         app.main(page)
-    await app.request_restore(page, SimpleNamespace(pick_files=pick_backup), restored)
+    await import_screen.request_restore(page, SimpleNamespace(pick_files=pick_backup), restored)
     await capture("phone-restore-confirm")
     confirm = next(c for c in walk(page._dialogs) if isinstance(c, ft.Button) and c.content == "Restaurer")
     await confirm.on_click(None)
@@ -189,7 +190,7 @@ async def preview(page):
     # First-run screen uses the same design system and remains scrollable.
     page.controls.clear()
     page.appbar = None
-    app.show_import_screen(page)
+    import_screen.show_import_screen(page)
     await capture("phone-onboarding")
     page.controls.clear()
     app.main(page)
