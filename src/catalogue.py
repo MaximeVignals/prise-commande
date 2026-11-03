@@ -73,11 +73,7 @@ def _read_rows(data, ext):
     raise CatalogueError("Format non pris en charge : choisissez un fichier .xlsx ou .csv.")
 
 
-def parse_catalogue(data, ext):
-    """Lit un catalogue au format « Catégorie | Article | Prix | Masqué » (voir FORMAT_CATALOGUE.md).
-    Retourne (articles, lignes_ignorées). Articles : Cle, Nom_Article, Catalogue, Categorie, Prix_Excel, Masque.
-    Lève CatalogueError si le fichier est inutilisable (en-têtes manquants, aucun article)."""
-    rows = _read_rows(data, ext.lower())
+def _find_columns(rows):
     # Ligne d'en-têtes = 1re ligne non vide
     while rows and all(_is_empty(v) for v in rows[0]):
         rows.pop(0)
@@ -93,6 +89,15 @@ def parse_catalogue(data, ext):
         raise CatalogueError(
             "Colonne(s) manquante(s) : " + ", ".join(f"« {m} »" for m in missing) + ".\n"
             "La ligne 1 doit contenir : " + " | ".join(CATALOGUE_COLUMNS.values()) + ".")
+    return columns
+
+
+def parse_catalogue(data, ext):
+    """Lit un catalogue au format « Catégorie | Article | Prix | Masqué » (voir FORMAT_CATALOGUE.md).
+    Retourne (articles, lignes_ignorées). Articles : Cle, Nom_Article, Catalogue, Categorie, Prix_Excel, Masque.
+    Lève CatalogueError si le fichier est inutilisable (en-têtes manquants, aucun article)."""
+    rows = _read_rows(data, ext.lower())
+    columns = _find_columns(rows)
 
     def cell(row, field):
         i = columns.get(field)
