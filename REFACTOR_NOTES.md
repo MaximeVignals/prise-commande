@@ -20,3 +20,7 @@ Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 - `CLAUDE.md` says version 1.2.0 / build 3; `pyproject.toml` is 1.5.0 / build 6.
 - `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
+
+## Design notes
+
+- `import_screen.py` imports `main` lazily inside `start_app` and `done` (`from .main import main` / `from main import main`) because `main` imports `import_screen`; a top-level import would be a cycle.

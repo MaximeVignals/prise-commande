@@ -51,6 +51,11 @@ class ModuleSplitTest(unittest.TestCase):
             self.assertIs(getattr(app, name), getattr(photos, name))
         self.assertIs(app.get_category_icon, ui.get_category_icon)
 
+    def test_import_screen_moved(self):
+        from src import main as app, import_screen
+        for name in ["pick_catalogue_file", "skipped_summary", "request_restore", "show_import_screen"]:
+            self.assertIs(getattr(app, name), getattr(import_screen, name))
+
 
 if __name__ == "__main__":
     unittest.main()
