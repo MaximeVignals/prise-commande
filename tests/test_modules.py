@@ -67,6 +67,15 @@ EXPECTED_CTX_FUNCTIONS = [
     "show_snack", "refresh", "rebuild_catalogue", "entry_by_key", "visible_entries", "new_order",
     "current_order", "cart", "persist", "persist_prefs", "dialog_width", "update_catalogue_selector",
     "entries_in", "managed_catalogues",
+    # Task 7 : écran panier (view_cart) et fonctions de main() qu'il utilise
+    "render_cart", "update_cart_summary", "change_qty_field",
+    "go_to_tab", "render_all", "render_orders", "edit_notes", "update_catalogue_badges",
+]
+
+# Widgets partagés (vérifiés avec assertIsNotNone).
+EXPECTED_CTX_WIDGETS = [
+    "content_panier", "basket_footer", "basket_heading", "cart_listview",
+    "cart_tab", "compact_cart_btn", "order_info", "archive_banner",
 ]
 
 
@@ -94,6 +103,9 @@ class AppContextTest(StorageTest):
         for name in EXPECTED_CTX_FUNCTIONS:
             with self.subTest(name=name):
                 self.assertTrue(callable(getattr(ctx, name, None)))
+        for name in EXPECTED_CTX_WIDGETS:
+            with self.subTest(widget=name):
+                self.assertIsNotNone(getattr(ctx, name, None))
 
 
 if __name__ == "__main__":

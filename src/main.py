@@ -26,6 +26,7 @@ if __package__:
                             split_catalogue_category)
     from .import_screen import pick_catalogue_file, request_restore, show_import_screen, skipped_summary
     from .context import AppContext
+    from . import view_cart
 else:
     import ui
     import backup
@@ -46,6 +47,7 @@ else:
                            split_catalogue_category)
     from import_screen import pick_catalogue_file, request_restore, show_import_screen, skipped_summary
     from context import AppContext
+    import view_cart
 
 try:
     # Appareil photo intégré (Android) : extension officielle flet-camera.
@@ -122,11 +124,10 @@ def main(page: ft.Page):
     filter_tags = ft.Row([], spacing=6, scroll=ft.ScrollMode.AUTO, visible=False)
 
     catalogue_listview = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(bottom=12))
-    cart_listview = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(bottom=12))
+    view_cart.install(ctx)
     catalogue_info = ui.text("", size=12, color=ui.MUTED)
-    total_text = ui.text(fmt_eur(0), size=26, weight=ft.FontWeight.W_600, color=ui.PRIMARY)
-    cart_info = ui.text("", size=12, color=ui.MUTED)
     order_info = ui.text("", size=12, color=ui.MUTED)
+    ctx.order_info = order_info  # partagé avec view_cart
 
     # Titre de la barre du haut = nom de la commande active
     appbar_title = ui.text("", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
@@ -140,6 +141,7 @@ def main(page: ft.Page):
         ctx.state["tab"] = index
         navigation.selected_index = index
         layout_workspace()
+    ctx.go_to_tab = go_to_tab  # partagé avec view_cart
 
     def add_to_cart(item, qty):
         try:
@@ -169,120 +171,6 @@ def main(page: ft.Page):
         ctx.show_snack(f"✅ Ajouté au panier (x{qty})")
         ctx.refresh()
 
-    def change_qty_field(field, delta):
-        try:
-            current = int(field.value)
-        except (TypeError, ValueError):
-            current = 1
-        field.value = str(max(1, current + delta))
-
-    def update_cart_qty(id_art, delta):
-        items = ctx.cart()
-        if id_art not in items:
-            return
-        if items[id_art]["quantite"] + delta <= 0:
-            remove_cart_line(id_art)  # « − » sur une quantité de 1 : retire la ligne (annulable)
-            return
-        items[id_art]["quantite"] += delta
-        ctx.persist()
-        render_all()
-        ctx.refresh()
-
-    def remove_cart_line(id_art):
-        """Retire une ligne du panier, avec « Annuler » dans le message pendant 8 secondes."""
-        order_id = ctx.state["current"]
-        items = ctx.cart()
-        if id_art not in items:
-            return
-        position = list(items).index(id_art)
-        line = items.pop(id_art)
-        ctx.persist()
-        render_all()
-
-        def undo(e):
-            if order_id not in ctx.orders or id_art in ctx.orders[order_id]["items"]:
-                return
-            restored = list(ctx.orders[order_id]["items"].items())
-            restored.insert(position, (id_art, line))
-            ctx.orders[order_id]["items"].clear()
-            ctx.orders[order_id]["items"].update(restored)
-            ctx.persist()
-            render_all()
-            ctx.refresh()
-
-        page.show_dialog(ft.SnackBar(
-            ui.text("🗑️ Ligne retirée du panier.", color=ft.Colors.ON_INVERSE_SURFACE),
-            action="Annuler",
-            on_action=undo,
-            persist=False,
-            duration=ft.Duration(seconds=8),  # le temps de toucher « Annuler »
-        ))
-        ctx.refresh()
-
-    def set_cart_qty(id_art, field, subtotal_text, final):
-        """Quantité tapée au clavier. Enregistrée à chaque chiffre ; à la sortie du champ,
-        une saisie vide ou à 0 est annulée (pour retirer une ligne : la corbeille)."""
-        items = ctx.cart()
-        if id_art not in items:
-            return
-        try:
-            qty = int(field.value)
-        except (TypeError, ValueError):
-            qty = 0
-        if qty > 0:
-            if qty != items[id_art]["quantite"]:
-                items[id_art]["quantite"] = qty
-                ctx.persist()
-                subtotal_text.value = fmt_eur(items[id_art]["Prix"] * qty)
-                update_cart_summary()
-                render_orders()
-            if final:
-                field.value = str(qty)
-        elif final:
-            field.value = str(items[id_art]["quantite"])
-            ctx.show_snack("Quantité invalide. Pour retirer la ligne, utilisez la corbeille.")
-        ctx.refresh()
-
-    def clear_cart(e):
-        order = ctx.current_order()
-        if not order["items"]:
-            ctx.show_snack("Le panier est déjà vide.")
-            ctx.refresh()
-            return
-
-        def confirm(e):
-            page.pop_dialog()
-            if not order["items"]:  # double appui
-                return
-            order["items"].clear()
-            ctx.persist()
-            render_all()
-            ctx.show_snack("🗑️ Panier vidé.")
-            ctx.refresh()
-
-        page.show_dialog(ft.AlertDialog(
-            scrollable=True,
-            modal=True,
-            title=ui.text("Vider le panier ?"),
-            content=ui.text(
-                f"Les {order_count(order)} article(s) de « {order['name']} » "
-                f"({fmt_eur(order_total(order))}) seront retirés."
-            ),
-            actions=[
-                ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ui.button(content="Vider", on_click=confirm,
-                          style=ft.ButtonStyle(bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR)),
-            ],
-        ))
-
-    async def copy_email_text(e):
-        order = ctx.current_order()
-        if not order["items"]:
-            ctx.show_snack("Le panier est vide.")
-            return
-
-        await ctx.clipboard.set(order_email_text(order))
-        ctx.show_snack("📋 Texte copié dans le presse-papiers !")
 
     # --- GESTION DES COMMANDES ---
 
@@ -444,6 +332,7 @@ def main(page: ft.Page):
             content=ft.Container(content=field, width=ctx.dialog_width()),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
                      ui.button(content="Enregistrer", on_click=save)]))
+    ctx.edit_notes = edit_notes  # partagé avec view_cart
 
     async def delete_order_dialog(order_id):
         await close_drawer()
@@ -576,7 +465,7 @@ def main(page: ft.Page):
                     on_change=lambda e, k=draft_key: ctx.quantity_drafts.__setitem__(k, e.control.value),
                 )
                 def adjust(e, q=qty_field, k=draft_key, delta=1):
-                    change_qty_field(q, delta)
+                    ctx.change_qty_field(q, delta)
                     ctx.quantity_drafts[k] = q.value
 
                 # Flèches ▼ / ▲ pour ajuster la quantité à ajouter (minimum 1)
@@ -671,6 +560,7 @@ def main(page: ft.Page):
             quantity = items.get(key, {}).get("quantite", 0)
             badge.value = f"Déjà {quantity} dans la commande" if quantity else ""
             badge.visible = quantity > 0
+    ctx.update_catalogue_badges = update_catalogue_badges  # partagé avec view_cart
 
     def render_filter_tags():
         tags = []
@@ -693,81 +583,6 @@ def main(page: ft.Page):
         filter_tags.controls = tags
         filter_tags.visible = bool(tags)
 
-    # --- RENDU PANIER ---
-    def render_cart():
-        cart_listview.controls.clear()
-        items = ctx.cart()
-
-        if not items:
-            cart_listview.controls.append(ui.empty(
-                ft.Icons.SHOPPING_BAG_OUTLINED, "Votre panier est prêt",
-                "Ajoutez des articles du catalogue pour préparer votre commande.",
-                ft.TextButton(content="Parcourir le catalogue", icon=ft.Icons.ARROW_FORWARD,
-                              on_click=lambda e: go_to_tab(0)),
-            ))
-        else:
-            for id_art, item in items.items():
-                sous_total = item["Prix"] * item["quantite"]
-                subtotal_text = ui.text(fmt_eur(sous_total), weight=ft.FontWeight.BOLD,
-                                        color=ui.PRIMARY)
-
-                # Quantité modifiable au clavier, ou avec − / +
-                qty_field = ui.field(
-                    value=str(item["quantite"]), width=64, dense=True,
-                    text_align=ft.TextAlign.CENTER,
-                    keyboard_type=ft.KeyboardType.NUMBER,
-                    input_filter=ft.NumbersOnlyInputFilter(),
-                    tooltip="Quantité",
-                )
-                qty_field.on_change = lambda e, i=id_art, f=qty_field, t=subtotal_text: set_cart_qty(i, f, t, False)
-                qty_field.on_blur = lambda e, i=id_art, f=qty_field, t=subtotal_text: set_cart_qty(i, f, t, True)
-                qty_field.on_submit = lambda e, i=id_art, f=qty_field, t=subtotal_text: set_cart_qty(i, f, t, True)
-
-                btn_minus = ft.IconButton(icon=ft.Icons.REMOVE, tooltip="Diminuer", width=48, height=48,
-                                          on_click=lambda e, i=id_art: update_cart_qty(i, -1))
-                btn_plus = ft.IconButton(icon=ft.Icons.ADD, tooltip="Augmenter", width=48, height=48,
-                                         on_click=lambda e, i=id_art: update_cart_qty(i, 1))
-                btn_delete = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.ERROR,
-                                           tooltip="Retirer du panier",
-                                           width=48, height=48,
-                                           on_click=lambda e, i=id_art: remove_cart_line(i))
-                btn_note = ft.IconButton(icon=ft.Icons.NOTES, width=48, height=48,
-                    icon_color=ui.PRIMARY if item.get("note") else ui.MUTED,
-                    tooltip=f"Remarque : {item['Nom']}", on_click=lambda e, k=id_art: edit_notes(key=k))
-
-                cart_listview.controls.append(
-                    ui.item_card(
-                        content=ft.Column([
-                            ft.Row([
-                                ui.text(item["Nom"], weight=ft.FontWeight.W_500, expand=True),
-                                subtotal_text,
-                            ], vertical_alignment=ft.CrossAxisAlignment.START),
-                            ui.text(item.get("note", ""), size=12, color=ui.MUTED, visible=bool(item.get("note"))),
-                            ft.Row([
-                                ui.text(f"{fmt_eur(item['Prix'])} / unité", size=12, color=ui.MUTED),
-                                ft.Row([btn_minus, qty_field, btn_plus, btn_note, btn_delete], spacing=0, tight=True),
-                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, spacing=8, run_spacing=4),
-                        ], spacing=4, tight=True),
-                    )
-                )
-
-        update_cart_summary()
-
-    def update_cart_summary():
-        """Total en bas du panier et nombre d'articles dans l'onglet « Panier »."""
-        order = ctx.current_order()
-        total_text.value = fmt_eur(order_total(order))
-        n = order_count(order)
-        cart_tab.label = f"Panier ({n})" if n else "Panier"
-        cart_info.value = f"{n} article(s) · {len(order['items'])} référence(s)"
-        order_info.value = f"{n} article(s) · {fmt_eur(order_total(order))}"
-        compact_cart_btn.content = f"{n} article(s) · {fmt_eur(order_total(order))}"
-        notes_preview.value = ctx.current_order().get("notes", "")
-        notes_preview.visible = bool(notes_preview.value)
-        archive_banner.visible = bool(order.get("archived"))
-        copy_order_btn.disabled = not bool(order["items"])
-        clear_order_btn.disabled = not bool(order["items"])
-        update_catalogue_badges()
 
     # --- RENDU DU MENU LATÉRAL (liste des commandes) ---
     def order_handlers(order_id):
@@ -932,6 +747,7 @@ def main(page: ft.Page):
             controls.append(ft.Container(padding=16, content=ui.text(
                 "Aucune commande archivée." if ctx.state["show_archived"] else "Aucune commande active.", color=ui.MUTED)))
         drawer.controls = controls
+    ctx.render_orders = render_orders  # partagé avec view_cart
 
     def render_all():
         if ctx.state.get("catalogue_order", object()) != ctx.state["current"]:
@@ -944,11 +760,12 @@ def main(page: ft.Page):
         else:
             appbar_title.value = ctx.current_order()["name"]
             body.content = workspace
-            render_cart()
+            ctx.render_cart()
             render_photos()
             layout_workspace()
         update_catalogue_badges()
         render_orders()
+    ctx.render_all = render_all  # partagé avec view_cart
 
     # =====================================================================
     # --- ÉCRAN « GÉRER LES ARTICLES » : affichage, prix, articles ajoutés ---
@@ -2051,26 +1868,6 @@ def main(page: ft.Page):
         catalogue_listview,
     ], expand=True, spacing=8)
 
-    copy_order_btn = ui.button(
-        content="Copier pour la Compta", icon=ft.Icons.COPY,
-        on_click=copy_email_text, expand=True,
-    )
-    clear_order_btn = ft.IconButton(
-        icon=ft.Icons.DELETE_OUTLINE, tooltip="Vider le panier", width=48, height=48,
-        on_click=clear_cart, icon_color=ft.Colors.ERROR,
-    )
-    basket_footer = ui.card(ft.Column([
-        ui.text("Total de la commande", size=13, color=ui.MUTED),
-        total_text,
-        ft.Row([copy_order_btn, clear_order_btn], spacing=8),
-    ], spacing=12))
-    notes_preview = ui.text("", size=12, color=ui.MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, visible=False)
-    basket_heading = ui.heading("Votre panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED,
-        trailing=ft.IconButton(icon=ft.Icons.NOTES, tooltip="Remarques de la commande", width=48, height=48,
-                               on_click=edit_notes))
-    content_panier = ft.Column([
-        basket_heading, cart_info, notes_preview, cart_listview, basket_footer,
-    ], expand=True, spacing=12)
 
     take_photo_btn = ui.button(
         content="Prendre une photo", icon=ft.Icons.PHOTO_CAMERA, on_click=open_camera,
@@ -2100,6 +1897,7 @@ def main(page: ft.Page):
     cart_tab = ft.NavigationBarDestination(
         label="Panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED, selected_icon=ft.Icons.SHOPPING_BAG,
     )
+    ctx.cart_tab = cart_tab  # partagé avec view_cart
     navigation = ft.NavigationBar(
         destinations=[
             ft.NavigationBarDestination(label="Catalogue", icon=ft.Icons.INVENTORY_2_OUTLINED,
@@ -2123,6 +1921,7 @@ def main(page: ft.Page):
         on_click=lambda e: go_to_tab(1), expand=True,
         style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY_CONTAINER, color=ft.Colors.ON_PRIMARY_CONTAINER,
                              padding=ft.Padding.symmetric(horizontal=12, vertical=14)))
+    ctx.compact_cart_btn = compact_cart_btn  # partagé avec view_cart
     quick_cart = ft.Container(content=ft.Row([compact_cart_btn]),
         padding=ft.Padding.only(left=12, right=12, bottom=8), visible=False)
 
@@ -2133,6 +1932,7 @@ def main(page: ft.Page):
         ui.text("Commande archivée", expand=True),
         ft.TextButton(content="Réactiver", on_click=restore_current_order),
     ]), padding=8, bgcolor=ft.Colors.PRIMARY_CONTAINER, visible=False)
+    ctx.archive_banner = archive_banner  # partagé avec view_cart
     workspace = ft.Column([archive_banner, pane_area, quick_cart, navigation], spacing=0, expand=True)
 
     def apply_filter_layout():
@@ -2144,7 +1944,7 @@ def main(page: ft.Page):
         catalogue_info.visible = not layout.short
         filter_button.bgcolor = ft.Colors.PRIMARY_CONTAINER if ctx.state["filters_open"] else None
         catalogue_dropdown.col = category_dropdown.col = 12 if narrow else 6
-        for heading in [catalogue_heading, basket_heading, photo_heading]:
+        for heading in [catalogue_heading, ctx.basket_heading, photo_heading]:
             heading.visible = not layout.short
 
     def apply_catalogue_columns():
@@ -2172,15 +1972,15 @@ def main(page: ft.Page):
         # In a short landscape/keyboard window, let the summary scroll with
         # the lines instead of consuming all of the basket's usable height.
         if layout.short:
-            if basket_footer in content_panier.controls:
-                content_panier.controls.remove(basket_footer)
-            if basket_footer not in cart_listview.controls:
-                cart_listview.controls.append(basket_footer)
+            if ctx.basket_footer in ctx.content_panier.controls:
+                ctx.content_panier.controls.remove(ctx.basket_footer)
+            if ctx.basket_footer not in ctx.cart_listview.controls:
+                ctx.cart_listview.controls.append(ctx.basket_footer)
         else:
-            if basket_footer in cart_listview.controls:
-                cart_listview.controls.remove(basket_footer)
-            if basket_footer not in content_panier.controls:
-                content_panier.controls.append(basket_footer)
+            if ctx.basket_footer in ctx.cart_listview.controls:
+                ctx.cart_listview.controls.remove(ctx.basket_footer)
+            if ctx.basket_footer not in ctx.content_panier.controls:
+                ctx.content_panier.controls.append(ctx.basket_footer)
         index = ctx.state["tab"]
         dual = layout.dual_pane
         # Reparent only at a layout/navigation boundary, never on every resize pixel.
@@ -2188,9 +1988,9 @@ def main(page: ft.Page):
         if ctx.state.get("layout_signature") != signature:
             main_host.content = None
             detail_host.content = None
-            main_host.content = content_photos if index == 2 else content_catalogue if dual or index == 0 else content_panier
+            main_host.content = content_photos if index == 2 else content_catalogue if dual or index == 0 else ctx.content_panier
             if dual:
-                detail_host.content = content_panier
+                detail_host.content = ctx.content_panier
             detail_host.visible = dual
             ctx.state["layout_signature"] = signature
         pane_area.padding = layout.margin
