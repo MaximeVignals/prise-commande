@@ -20,6 +20,8 @@ Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 - `CLAUDE.md` says version 1.2.0 / build 3; `pyproject.toml` is 1.5.0 / build 6.
 - `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
+- Seen once in the Task 12 web smoke (not reproduced after reload, not investigated against the pre-refactor build): after three quick add-to-cart clicks the cart showed a duplicate row for one article while the totals were right.
+- `shell.install` is ~270 lines (layout, routes, resize handlers, app bar in one function); splitting is Task 13.
 
 ## Design notes
 
