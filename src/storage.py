@@ -183,6 +183,18 @@ def load_prefs(excel_items):
             p = _to_price(v)
             if p is not None and p >= 0:
                 prices[str(k)] = p
+    custom = _load_custom_articles(data)
+    prefs = {"hidden": hidden, "hidden_catalogues": hidden_catalogues,
+             "prices": prices, "custom": custom,
+             "favorites": {k for k in data.get("favorites", []) if isinstance(k, str)}
+                          if isinstance(data.get("favorites"), list) else set(),
+             "recent": list(dict.fromkeys(k for k in data.get("recent", []) if isinstance(k, str)))[:20]
+                       if isinstance(data.get("recent"), list) else []}
+    _load_catalogue_snapshot(data, prefs)
+    return prefs, None
+
+
+def _load_custom_articles(data):
     custom = []
     for c in data.get("custom", []) if isinstance(data.get("custom"), list) else []:
         try:
@@ -195,12 +207,10 @@ def load_prefs(excel_items):
         if (article["key"].startswith(KEY_PERSO) and article["name"] and article["category"]
                 and math.isfinite(article["price"]) and article["price"] >= 0):
             custom.append(article)
-    prefs = {"hidden": hidden, "hidden_catalogues": hidden_catalogues,
-             "prices": prices, "custom": custom,
-             "favorites": {k for k in data.get("favorites", []) if isinstance(k, str)}
-                          if isinstance(data.get("favorites"), list) else set(),
-             "recent": list(dict.fromkeys(k for k in data.get("recent", []) if isinstance(k, str)))[:20]
-                       if isinstance(data.get("recent"), list) else []}
+    return custom
+
+
+def _load_catalogue_snapshot(data, prefs):
     # Copie locale après renommage / suppression. Une liste vide est un catalogue vidé.
     snapshot = data.get("catalogue_items")
     if isinstance(snapshot, list):
@@ -221,7 +231,6 @@ def load_prefs(excel_items):
                           "Categorie": category, "Prix_Excel": price, "Masque": bool(item.get("Masque"))})
         else:
             prefs["catalogue_items"] = clean
-    return prefs, None
 
 
 def save_prefs(prefs):
