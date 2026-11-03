@@ -87,27 +87,7 @@ def install(ctx: AppContext) -> None:
         ctx.refresh()
 
     # --- RENDU CATALOGUE ---
-    def render_catalogue():
-        catalogue_listview.controls.clear()
-        ctx.catalogue_grids.clear()
-        ctx.catalogue_rows.clear()
-        ctx.catalogue_badges.clear()
-        ctx.favorite_buttons.clear()
-        previous_catalogue = catalogue_dropdown.value
-        ctx.update_catalogue_selector(catalogue_dropdown)
-        if catalogue_dropdown.value != previous_catalogue:
-            category_dropdown.value = "Toutes"
-        has_catalogue = catalogue_dropdown.value is not None
-        search_input.disabled = not has_catalogue
-        category_dropdown.disabled = not has_catalogue
-        shown = [entry for entry in ctx.entries_in(catalogue_dropdown.value) if entry["Visible"]]
-        categories = categories_of(shown)
-
-        # Filtre : seules les catégories qui ont au moins un article affiché
-        category_dropdown.options = [ft.DropdownOption(key=c, text=c) for c in ["Toutes"] + sorted(categories)]
-        if category_dropdown.value not in categories:
-            category_dropdown.value = "Toutes"
-
+    def filter_catalogue(shown, categories):
         search_val = search_input.value or ""
         cat_val = category_dropdown.value
 
@@ -125,9 +105,9 @@ def install(ctx: AppContext) -> None:
         # Recents keep chronological order instead of being regrouped by category.
         groups = [("Articles récents", filtered)] if mode == "recent" else [
             (category, [it for it in filtered if it["Categorie"] == category]) for category in categories]
-        catalogue_info.value = f"{len(filtered)} article(s) · {len(categories_of(filtered))} catégorie(s)"
-        render_filter_tags()
+        return filtered, mode, groups
 
+    def render_catalogue_empty(has_catalogue, shown, filtered, mode):
         if not has_catalogue:
             catalogue_listview.controls.extend([
                 ui.text("Aucun catalogue affiché. Activez un catalogue pour parcourir ses articles.",
@@ -150,22 +130,50 @@ def install(ctx: AppContext) -> None:
                 ft.TextButton(content="Réinitialiser les filtres", on_click=reset_filters),
             ))
 
+    def category_header(categorie, group):
+        return ft.Container(
+            content=ft.Row([
+                ft.Icon(get_category_icon(categorie), size=20, color=ui.PRIMARY),
+                ui.text(categorie, size=16, weight=ft.FontWeight.W_600, expand=True),
+                ui.text(str(len(group)), size=12, color=ui.MUTED),
+            ], spacing=10),
+            padding=ft.Padding.symmetric(vertical=4, horizontal=4),
+            margin=ft.Margin.only(top=2),
+        )
+
+    def render_catalogue():
+        catalogue_listview.controls.clear()
+        ctx.catalogue_grids.clear()
+        ctx.catalogue_rows.clear()
+        ctx.catalogue_badges.clear()
+        ctx.favorite_buttons.clear()
+        previous_catalogue = catalogue_dropdown.value
+        ctx.update_catalogue_selector(catalogue_dropdown)
+        if catalogue_dropdown.value != previous_catalogue:
+            category_dropdown.value = "Toutes"
+        has_catalogue = catalogue_dropdown.value is not None
+        search_input.disabled = not has_catalogue
+        category_dropdown.disabled = not has_catalogue
+        shown = [entry for entry in ctx.entries_in(catalogue_dropdown.value) if entry["Visible"]]
+        categories = categories_of(shown)
+
+        # Filtre : seules les catégories qui ont au moins un article affiché
+        category_dropdown.options = [ft.DropdownOption(key=c, text=c) for c in ["Toutes"] + sorted(categories)]
+        if category_dropdown.value not in categories:
+            category_dropdown.value = "Toutes"
+
+        filtered, mode, groups = filter_catalogue(shown, categories)
+        catalogue_info.value = f"{len(filtered)} article(s) · {len(categories_of(filtered))} catégorie(s)"
+        render_filter_tags()
+
+        render_catalogue_empty(has_catalogue, shown, filtered, mode)
+
         for categorie, group in groups:
             if not group:
                 continue
 
             # En-tête de catégorie
-            catalogue_listview.controls.append(
-                ft.Container(
-                    content=ft.Row([
-                        ft.Icon(get_category_icon(categorie), size=20, color=ui.PRIMARY),
-                        ui.text(categorie, size=16, weight=ft.FontWeight.W_600, expand=True),
-                        ui.text(str(len(group)), size=12, color=ui.MUTED),
-                    ], spacing=10),
-                    padding=ft.Padding.symmetric(vertical=4, horizontal=4),
-                    margin=ft.Margin.only(top=2),
-                )
-            )
+            catalogue_listview.controls.append(category_header(categorie, group))
 
             # The grid responds to the pane width, including resized windows.
             group_cards = []
