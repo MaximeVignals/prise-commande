@@ -75,6 +75,8 @@ EXPECTED_CTX_FUNCTIONS = [
     # Task 9 : écran commandes (view_orders) et fonctions de main() qu'il utilise
     "create_order_dialog", "archive_order", "open_drawer", "close_drawer",
     "open_admin", "replace_catalogue", "open_backup_view",
+    # Task 10 : écran des articles (view_admin)
+    "apply_admin_density", "render_admin",
 ]
 
 # Widgets partagés (vérifiés avec assertIsNotNone).
@@ -84,6 +86,7 @@ EXPECTED_CTX_WIDGETS = [
     "content_catalogue", "catalogue_heading", "catalogue_dropdown", "category_dropdown", "catalogue_info",
     "browse_row", "filter_button", "filter_details",
     "drawer", "appbar_title",
+    "admin_catalogue", "admin_category", "admin_view",
 ]
 
 
