@@ -14,6 +14,52 @@ Goal: split `main.py` into focused modules, zero behaviour change.
 
 Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 
+## After (Task 13)
+
+| File | Lines |
+|---|---|
+| `src/main.py` | 65 |
+| `src/config.py` | 23 |
+| `src/text.py` | 69 |
+| `src/storage.py` | 245 |
+| `src/catalogue.py` | 217 |
+| `src/orders.py` | 60 |
+| `src/photos.py` | 64 |
+| `src/context.py` | 139 |
+| `src/import_screen.py` | 207 |
+| `src/shell.py` | 290 |
+| `src/view_cart.py` | 239 |
+| `src/view_catalogue.py` | 344 |
+| `src/view_orders.py` | 408 |
+| `src/view_admin.py` | 425 |
+| `src/view_catalogues.py` | 224 |
+| `src/view_photos.py` | 415 |
+| `src/view_backup.py` | 100 |
+| `src/backup.py` | 295 |
+| `src/ui.py` | 229 |
+| `tests/` (all files) | 1396 |
+
+Tests: 95 OK. Three modules stay just over 400 lines (`view_admin`, `view_photos`, `view_orders`): each is one screen, and splitting functions inside a module does not shorten it.
+
+## Long functions (> 50 lines)
+
+Split in Task 13 (verbatim blocks moved into helpers, same call point and order):
+- `render_catalogue` 152 → 106 (`filter_catalogue`, `render_catalogue_empty`, `category_header`)
+- `render_orders` 139 → 34 (`drawer_header`, `order_tile`)
+- `shell.install` 268 → 234 (`install_appbar`, `finish_startup`)
+- `load_prefs` 62 → 32 (`_load_custom_articles`, `_load_catalogue_snapshot`)
+- `parse_catalogue` 70 → 56 (`_find_columns`)
+
+Kept whole:
+- `install()` of every view module and of `shell` (205–405 lines): the old closure body; the widgets and handlers share locals by closure.
+- `render_catalogue` (106): what remains is the per-article card loop; its lambdas bind loop variables (`k=draft_key`, `item=current_item`, `q=qty_field`), so it stays inline.
+- `render_cart` (58): same reason, per-line loop with lambdas binding `id_art` / `qty_field`.
+- `drawer_header` (67): one list literal of fixed drawer entries.
+- `add_article_dialog` (64): fields, `validate` closure and dialog form one unit; extracting the fields alone would leave it over 50.
+- `ask_photo_label` (55): `save` / `remove` closures share the field and photo with the dialog.
+- `parse_catalogue` (56): the per-row loop uses `continue` to build the skipped-line warnings; splitting it would restructure control flow.
+- Not reviewed for splitting (timebox): `show_import_screen` (95), `restore_backup` (65), `make_theme` (64), `request_restore` (61).
+
 ## Bugs / risks (not fixed)
 
 - `src/catalogue_importe.xlsx` and `src/catalogue_perso.json` exist in `src/`; they are git-ignored, but `flet build` packages `src/`, and `construire.ps1` only checks `src\assets`. Check before the next build.
@@ -22,7 +68,8 @@ Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
 - Seen once in the Task 12 web smoke (not reproduced after reload, not investigated against the pre-refactor build): after three quick add-to-cart clicks the cart showed a duplicate row for one article while the totals were right.
 - Change required by the move (Task 12): `scripts/preview_ui.py` import paths only (`app.<name>` -> `catalogue`/`storage`/`config`/`backup`/`import_screen`), because main.py no longer re-exports them.
-- `shell.install` is ~270 lines (layout, routes, resize handlers, app bar in one function); splitting is Task 13.
+- `shell.install` was ~270 lines; Task 13 moved the app bar and the startup tail out (now 234, see "Long functions").
+- `backup.py` still spells `"commandes.json"`, `"catalogue_perso.json"` and `"sauvegardes/avant-restauration-…zip"` itself (it is a standalone module with no app imports). `config.py` holds the same values (`ORDERS_FILENAME`, `PREFS_FILENAME`, `BACKUPS_DIRNAME`, `RECOVERY_BACKUP_PATTERN`): change both together.
 
 ## Design notes
 
