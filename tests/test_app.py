@@ -300,6 +300,7 @@ class TestPage:
         self.platform = platform
         self.width, self.height = width, height
         self.controls = []
+        self.overlay = []
         self.dialogs = []
         self.appbar = self.drawer = None
         self.views = [ft.View(route="/")]
@@ -396,6 +397,16 @@ class CatalogueBrowsingTests(StorageTest):
         menu = self.page.find(ft.PopupMenuButton, tooltip=f"Options « {name or app.DEFAULT_CATALOGUE_LABEL} »")
         item = next(item for item in menu.items if item.content == action)
         item.on_click(None)
+
+    def test_restarting_main_on_same_page_does_not_duplicate_screen(self):
+        self.page.views.append(ft.View(route="/catalogues"))
+        app.main(self.page)
+        self.assertEqual(len(self.page.controls), 1)
+        self.assertEqual(len(self.page.views), 1)
+        dropdown = self.select_catalogue("Services")
+        keys = [option.key for option in dropdown.options]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(dropdown.value, "Services")
 
     def test_rename_catalogue_preserves_keys_settings_custom_articles_and_orders(self):
         items = app.load_catalogue()

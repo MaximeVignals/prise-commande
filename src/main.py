@@ -829,7 +829,18 @@ def show_import_screen(page):
 # --- APPLICATION PRINCIPALE FLET ---
 
 
+def reset_page(page):
+    """Repart d'un écran vide : main() peut être relancé sur la même page (import au premier
+    lancement, restauration, reprise Android). Sans ça, l'ancien écran reste et tout apparaît en double."""
+    while len(page.views) > 1:
+        page.views.pop()
+    page.controls.clear()
+    page.overlay.clear()
+    page.appbar = page.drawer = None
+
+
 def main(page: ft.Page):
+    reset_page(page)
     page.title = "Prise de Commande"
     ui.configure_page(page)
 
