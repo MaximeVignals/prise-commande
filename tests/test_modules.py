@@ -70,12 +70,16 @@ EXPECTED_CTX_FUNCTIONS = [
     # Task 7 : écran panier (view_cart) et fonctions de main() qu'il utilise
     "render_cart", "update_cart_summary", "change_qty_field",
     "go_to_tab", "render_all", "render_orders", "edit_notes", "update_catalogue_badges",
+    # Task 8 : écran catalogue (view_catalogue) et fonctions de main() qu'il utilise
+    "render_catalogue", "apply_catalogue_columns", "apply_filter_layout", "open_catalogue_manager",
 ]
 
 # Widgets partagés (vérifiés avec assertIsNotNone).
 EXPECTED_CTX_WIDGETS = [
     "content_panier", "basket_footer", "basket_heading", "cart_listview",
     "cart_tab", "compact_cart_btn", "order_info", "archive_banner",
+    "content_catalogue", "catalogue_heading", "catalogue_dropdown", "category_dropdown", "catalogue_info",
+    "browse_row", "filter_button", "filter_details",
 ]
 
 
