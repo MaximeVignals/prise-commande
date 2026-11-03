@@ -43,6 +43,14 @@ class ModuleSplitTest(unittest.TestCase):
             for key in ["Cle", "Nom_Article", "Catalogue", "Categorie", "Prix_Excel", "Masque"]:
                 self.assertIn(key, item)
 
+    def test_orders_and_photos_moved(self):
+        from src import main as app, orders, photos, ui
+        for name in ["order_total", "order_count", "order_email_text", "duplicate_order"]:
+            self.assertIs(getattr(app, name), getattr(orders, name))
+        for name in ["safe_filename", "photo_export_names", "photos_summary", "build_photos_zip"]:
+            self.assertIs(getattr(app, name), getattr(photos, name))
+        self.assertIs(app.get_category_icon, ui.get_category_icon)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,11 @@ from dataclasses import dataclass
 
 import flet as ft
 
+if __package__:
+    from .text import fold
+else:
+    from text import fold
+
 
 SPACE = 16
 RADIUS = 20
@@ -206,3 +211,19 @@ def empty(icon, title, description, action=None):
     )
 
 
+def get_category_icon(category_name):
+    cat_lower = fold(category_name)
+    for words, icon in [
+        (["ecran", "moniteur"], ft.Icons.MONITOR),
+        (["unite", "pc", "ordinateur", "portable"], ft.Icons.LAPTOP_OUTLINED),
+        (["serveur", "baie", "nas"], ft.Icons.DNS_OUTLINED),
+        (["clavier", "souris"], ft.Icons.KEYBOARD_OUTLINED),
+        (["imprimante", "scanner", "copieur"], ft.Icons.PRINT_OUTLINED),
+        (["reseau", "onduleur", "switch"], ft.Icons.CABLE),
+        (["tablette", "smartphone"], ft.Icons.TABLET_ANDROID),
+        (["radio", "imagerie", "capteur", "camera"], ft.Icons.PHOTO_CAMERA_OUTLINED),
+        (["papeterie", "cheques"], ft.Icons.DESCRIPTION_OUTLINED),
+    ]:
+        if any(word in cat_lower for word in words):
+            return icon
+    return ft.Icons.INVENTORY_2_OUTLINED

@@ -1,11 +1,8 @@
 import asyncio
 import copy
-import io
 import os
-import re
 import shutil
 import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +10,7 @@ import flet as ft
 
 if __package__:
     from . import ui, backup
+    from .ui import get_category_icon
     from .config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
                          DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
                          REQUIRED_COLUMNS, SAMPLE_CATALOGUE_FILENAME, YES_VALUES)
@@ -21,12 +19,15 @@ if __package__:
     from .storage import (_set_aside, _valid_iso, assets_dir, load_orders, load_prefs, migrate_cart_keys, orders_path,
                           photo_path, photos_dir, prefs_path, read_json, save_orders, save_prefs, storage_dir,
                           write_json)
+    from .orders import duplicate_order, order_count, order_email_text, order_total
+    from .photos import build_photos_zip, photo_export_names, photos_summary, safe_filename
     from .catalogue import (CatalogueError, _read_rows, build_catalogue, catalogue_path, catalogues_of, categories_of,
                             install_catalogue, load_catalogue, parse_catalogue, sample_catalogue_path,
                             split_catalogue_category)
 else:
     import ui
     import backup
+    from ui import get_category_icon
     from config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
                         DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
                         REQUIRED_COLUMNS, SAMPLE_CATALOGUE_FILENAME, YES_VALUES)
@@ -35,6 +36,8 @@ else:
     from storage import (_set_aside, _valid_iso, assets_dir, load_orders, load_prefs, migrate_cart_keys, orders_path,
                          photo_path, photos_dir, prefs_path, read_json, save_orders, save_prefs, storage_dir,
                          write_json)
+    from orders import duplicate_order, order_count, order_email_text, order_total
+    from photos import build_photos_zip, photo_export_names, photos_summary, safe_filename
     from catalogue import (CatalogueError, _read_rows, build_catalogue, catalogue_path, catalogues_of, categories_of,
                            install_catalogue, load_catalogue, parse_catalogue, sample_catalogue_path,
                            split_catalogue_category)
@@ -47,118 +50,6 @@ except ImportError:
     fc = None
 
 # --- FONCTIONS DE NETTOYAGE ET UTILITAIRES ---
-
-
-def get_category_icon(category_name):
-    cat_lower = fold(category_name)
-    for words, icon in [
-        (["ecran", "moniteur"], ft.Icons.MONITOR),
-        (["unite", "pc", "ordinateur", "portable"], ft.Icons.LAPTOP_OUTLINED),
-        (["serveur", "baie", "nas"], ft.Icons.DNS_OUTLINED),
-        (["clavier", "souris"], ft.Icons.KEYBOARD_OUTLINED),
-        (["imprimante", "scanner", "copieur"], ft.Icons.PRINT_OUTLINED),
-        (["reseau", "onduleur", "switch"], ft.Icons.CABLE),
-        (["tablette", "smartphone"], ft.Icons.TABLET_ANDROID),
-        (["radio", "imagerie", "capteur", "camera"], ft.Icons.PHOTO_CAMERA_OUTLINED),
-        (["papeterie", "cheques"], ft.Icons.DESCRIPTION_OUTLINED),
-    ]:
-        if any(word in cat_lower for word in words):
-            return icon
-    return ft.Icons.INVENTORY_2_OUTLINED
-
-
-def safe_filename(text, fallback="photo"):
-    """Texte utilisable comme nom de fichier sous Windows et Android."""
-    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", str(text))
-    text = " ".join(text.split()).strip(" .")
-    return text[:60] or fallback
-
-
-def photo_export_names(order):
-    """Noms des photos exportées, numérotés dans l'ordre : « 01 - Ancien serveur.jpg »."""
-    names = []
-    for i, photo in enumerate(order.get("photos", []), 1):
-        ext = os.path.splitext(photo["file"])[1].lower() or ".jpg"
-        names.append(f"{i:02d} - {safe_filename(photo['label'])}{ext}")
-    return names
-
-
-def photos_summary(order, names):
-    """Texte joint à l'export : commande, liste des photos avec leur libellé, articles."""
-    lines = [f"Commande : {order['name']}",
-             f"Exporté le {datetime.now():%d/%m/%Y à %H:%M}", "", "Photos :"]
-    for photo, name in zip(order.get("photos", []), names):
-        added = datetime.fromisoformat(photo["added"]).strftime("%d/%m/%Y %H:%M")
-        lines.append(f"- {name} : {photo['label']} (prise le {added})")
-    if order.get("notes"):
-        lines += ["", f"Remarques : {order['notes']}"]
-    if order["items"]:
-        lines += ["", "Articles de la commande :"]
-        for item in order["items"].values():
-            lines.append(f"- {item['quantite']}x {item['Nom']} ({fmt_eur(item['Prix'])}/u)")
-            if item.get("note"):
-                lines.append(f"  Remarque : {item['note']}")
-        lines.append(f"TOTAL : {fmt_eur(order_total(order))}")
-    return lines
-
-
-def build_photos_zip(order_id, order):
-    """ZIP en mémoire : les photos nommées par leur libellé + « photos.txt »."""
-    names = photo_export_names(order)
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for photo, name in zip(order["photos"], names):
-            # JPEG déjà compressé : stocké tel quel (plus rapide, même taille)
-            archive.write(photo_path(order_id, photo), arcname=name, compress_type=zipfile.ZIP_STORED)
-        # \r\n : lisible correctement dans le Bloc-notes de Windows
-        archive.writestr("photos.txt", "\r\n".join(photos_summary(order, names)))
-    return buffer.getvalue()
-
-
-def order_total(order):
-    return sum(v["Prix"] * v["quantite"] for v in order["items"].values())
-
-
-def order_count(order):
-    return sum(v["quantite"] for v in order["items"].values())
-
-
-def order_email_text(order):
-    text = f"Bonjour,\n\nVoici le détail de la commande « {order['name']} » :\n\n"
-    if order.get("notes"):
-        text += f"Remarques : {order['notes']}\n\n"
-    for item in order["items"].values():
-        text += f"- {item['quantite']}x {item['Nom']} ({fmt_eur(item['Prix'])}/u) = {fmt_eur(item['Prix'] * item['quantite'])}\n"
-        if item.get("note"):
-            text += f"  Remarque : {item['note']}\n"
-    return text + f"\nTOTAL : {fmt_eur(order_total(order))}\n\nMerci."
-
-
-def duplicate_order(order_id, order, name=None, existing_ids=()):
-    """Independent draft, including independent photo files and labels."""
-    new_id = uuid.uuid4().hex[:8]
-    while new_id in existing_ids or photos_dir(new_id).exists():
-        new_id = uuid.uuid4().hex[:8]
-    duplicate = copy.deepcopy(order)
-    duplicate.update(name=(name or "").strip() or f"{order['name']} — copie",
-                     created=datetime.now().isoformat(timespec="minutes"), photos=[])
-    duplicate.pop("archived", None)
-    target = photos_dir(new_id)
-    try:
-        for photo in order.get("photos", []):
-            photo_id = uuid.uuid4().hex[:8]
-            filename = photo_id + Path(photo["file"]).suffix
-            target.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(photo_path(order_id, photo), target / filename)
-            duplicate["photos"].append({**photo, "id": photo_id, "file": filename})
-    except OSError:
-        # Only files just created for this new, generated ID are removed.
-        for path in target.glob("*"):
-            path.unlink()
-        if target.exists():
-            target.rmdir()
-        raise
-    return new_id, duplicate
 
 
 # --- IMPORT DU CATALOGUE ---
