@@ -22,9 +22,6 @@ else:
     import shell
 
 
-# --- FONCTIONS DE NETTOYAGE ET UTILITAIRES ---
-
-
 # --- APPLICATION PRINCIPALE FLET ---
 
 

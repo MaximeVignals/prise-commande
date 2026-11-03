@@ -16,11 +16,8 @@ from src import main as app
 from src import storage
 from src import catalogue as catalogue_mod
 from src import config as config_mod
-from src import import_screen
 from src import orders as orders_mod
-from src import photos as photos_mod
 from src import text as text_mod
-from src import ui
 from src import backup
 from test_app import StorageTest, TestPage
 
