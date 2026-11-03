@@ -7,7 +7,6 @@ import math
 import os
 import re
 import shutil
-import unicodedata
 import uuid
 import zipfile
 from datetime import datetime
@@ -18,9 +17,19 @@ from openpyxl import load_workbook
 
 if __package__:
     from . import ui, backup
+    from .config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
+                         DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
+                         REQUIRED_COLUMNS, SAMPLE_CATALOGUE_FILENAME, YES_VALUES)
+    from .text import (_is_empty, _to_price, default_order_name, fmt_eur, fmt_input, fold, matches_search,
+                       norm_text)
 else:
     import ui
     import backup
+    from config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
+                        DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
+                        REQUIRED_COLUMNS, SAMPLE_CATALOGUE_FILENAME, YES_VALUES)
+    from text import (_is_empty, _to_price, default_order_name, fmt_eur, fmt_input, fold, matches_search,
+                      norm_text)
 
 try:
     # Appareil photo intégré (Android) : extension officielle flet-camera.
@@ -28,26 +37,6 @@ try:
     import flet_camera as fc
 except ImportError:
     fc = None
-
-CATALOGUE_STEM = "catalogue_importe"                # catalogue importé par l'utilisateur (+ .xlsx ou .csv)
-CATALOGUE_EXTENSIONS = (".xlsx", ".csv")
-SAMPLE_CATALOGUE_FILENAME = "catalogue_modele.xlsx"  # catalogue fictif fourni avec le code (même format)
-ORDERS_FILENAME = "commandes.json"
-PREFS_FILENAME = "catalogue_perso.json"  # articles masqués, prix modifiés, articles ajoutés
-
-# Format du catalogue (voir FORMAT_CATALOGUE.md) : 1re feuille (ou CSV), ligne 1 = en-têtes
-# « Catégorie | Article | Prix | Masqué ». Les 3 premières sont obligatoires, « Masqué » est facultative.
-CATALOGUE_COLUMNS = {"categorie": "Catégorie", "article": "Article", "prix": "Prix", "masque": "Masqué"}
-REQUIRED_COLUMNS = ("categorie", "article", "prix")
-YES_VALUES = {"oui", "o", "x", "1", "yes", "y", "vrai", "true"}
-
-# Préfixes des clés d'articles (identifiant stable, indépendant de la position dans l'Excel)
-KEY_EXCEL = "XL:"
-KEY_CATALOGUE = "CAT:"
-KEY_PERSO = "PERSO:"
-DEFAULT_CATALOGUE = ""
-DEFAULT_CATALOGUE_LABEL = "Catalogue principal (sans préfixe)"
-ALL_CATALOGUES = "__all_catalogues__"
 
 # --- FONCTIONS DE NETTOYAGE ET UTILITAIRES ---
 
@@ -74,21 +63,6 @@ def get_category_icon(category_name):
         if any(word in cat_lower for word in words):
             return icon
     return ft.Icons.INVENTORY_2_OUTLINED
-
-
-def _is_empty(value):
-    return value is None or (isinstance(value, str) and value.strip() == "")
-
-
-def norm_text(value):
-    """Texte sur une seule ligne, espaces multiples réduits (certaines cellules contiennent des retours à la ligne)."""
-    return " ".join(str(value).split())
-
-
-def fold(text):
-    """Minuscules sans accents, pour comparer des noms sans se soucier de la saisie."""
-    text = unicodedata.normalize("NFKD", str(text).lower())
-    return "".join(c for c in text if not unicodedata.combining(c))
 
 
 class CatalogueError(Exception):
@@ -243,50 +217,6 @@ def install_catalogue(data, ext):
         if other != ext:
             (storage_dir() / (CATALOGUE_STEM + other)).unlink(missing_ok=True)
     return items, skipped
-
-
-def _to_price(value):
-    """Convertit une cellule (ou une saisie) en prix (float) ou None.
-    Accepte les nombres, mais aussi le texte : '4 990,00 €', '4990.5', '1.234,56', '1.234' (= 1 234)."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            price = float(value)
-        except OverflowError:
-            return None
-        return price if math.isfinite(price) else None
-    s = str(value).strip()
-    for junk in (" ", " ", " ", "€", "EUR", "HT", "TTC"):
-        s = s.replace(junk, "")
-    if "," not in s and re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
-        s = s.replace(".", "")  # '1.234' : point = séparateur de milliers (à la française)
-    s = s.replace(",", ".")
-    if s.count(".") > 1:  # séparateurs de milliers : '1.234.56' → '1234.56'
-        head, _, tail = s.rpartition(".")
-        s = head.replace(".", "") + "." + tail
-    try:
-        price = float(s)
-        return price if math.isfinite(price) else None
-    except ValueError:
-        return None
-
-
-def fmt_eur(value):
-    """Prix au format français, ex. « 1 350,00 € » (espaces insécables : le prix ne se coupe pas)."""
-    return f"{value:,.2f}".replace(",", "\u00a0").replace(".", ",") + "\u00a0€"
-
-
-def fmt_input(value):
-    """Prix dans un champ de saisie, ex. « 1350,00 » (sans espace : plus simple à corriger)."""
-    return f"{value:.2f}".replace(".", ",")
-
-
-def matches_search(name, query):
-    """Recherche souple : ni accents ni majuscules, et tous les mots tapés doivent figurer
-    dans le nom, dans n'importe quel ordre (« ecran dell 24 » trouve « Écran 24'' DELL »)."""
-    folded = fold(name)
-    return all(word in folded for word in fold(query).split())
 
 
 # --- FICHIERS DE DONNÉES (commandes et réglages du catalogue) ---
@@ -590,10 +520,6 @@ def categories_of(entries):
 def catalogues_of(entries):
     """Catalogues dans l'ordre du fichier, y compris ceux dont tous les articles sont masqués."""
     return list(dict.fromkeys(e["Catalogue"] for e in entries))
-
-
-def default_order_name():
-    return f"Commande du {datetime.now().strftime('%d/%m %H:%M')}"
 
 
 def order_total(order):
