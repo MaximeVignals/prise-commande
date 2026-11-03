@@ -1,9 +1,9 @@
 #!/bin/sh
-# Refuses a commit that contains a spreadsheet (other than the made-up sample),
-# the catalogue rules, a signing key or a password file.
+# Refuses a commit that contains a spreadsheet (other than the made-up templates),
+# a signing key or a password file.
 bad=$(git diff --cached --name-only --diff-filter=ACMR \
-  | grep -iE '\.(xlsx|xls|xlsm|csv|ods|jks|keystore|p12|pfx|apk|aab)$|regles_catalogue\.json$|mot_de_passe|commandes.*\.json$' \
-  | grep -vx 'src/assets/catalogue exemple.xlsx')
+  | grep -iE '\.(xlsx|xls|xlsm|csv|ods|jks|keystore|p12|pfx|apk|aab)$|mot_de_passe|commandes.*\.json$' \
+  | grep -vxE 'src/assets/catalogue_modele\.xlsx|modele/catalogue_modele\.(xlsx|csv)')
 if [ -n "$bad" ]; then
   echo "COMMIT REFUSE : fichiers prives dans le commit :"
   echo "$bad" | sed 's/^/  - /'

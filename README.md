@@ -22,25 +22,14 @@ flet run            # desktop window
 flet run --web      # in the browser
 ```
 
-The repo ships with a made-up catalogue (`src/assets/catalogue exemple.xlsx`) and example rules, so the app runs as is.
+On first launch the app asks for a catalogue file. Pick **Try the sample catalogue** to test with made-up data.
 
-## Use your own catalogue
+## Catalogue format
 
-**Excel format (first sheet).**
+The app imports an `.xlsx` or `.csv` file with these headers on row 1: `Catégorie | Article | Prix | Masqué`.
+The full spec, templates in `modele/`, and a ready-made prompt to convert an existing price list with an AI assistant are in [FORMAT_CATALOGUE.md](FORMAT_CATALOGUE.md).
 
-| Column | Content |
-|---|---|
-| A | Item name. A **bold** row with no price is a category title. |
-| B | New price (number, or text such as `1 190,00 €`). A row with a header of `TARIF NEUF` is skipped. |
-| C | Used price (optional). |
-
-Non-bold rows without a price (pack details, notes) are ignored.
-
-**Files.** Put your files next to the sample in `src/assets/`:
-- `catalogue materiel.xlsx`: used instead of the sample when present.
-- `regles_catalogue.json`: optional rules, in the same format as `regles_catalogue.exemple.json`. They cover renamed categories, words kept in capitals, sections to skip and items hidden by default.
-
-Both names are git-ignored.
+To replace the catalogue later: ☰ › **Importer un catalogue**. Orders, edited prices and hidden items are kept for items whose name is unchanged.
 
 ## Build
 
@@ -49,9 +38,9 @@ Both names are git-ignored.
 .\scripts\construire.ps1 -Cible apk   # APK only
 ```
 
-The script expects a private folder layout next to the repo: `..\prive\` for the catalogue and rules, `..\signature_android\` for the Android key, and `..\releases\` for the outputs. It copies the private files into `src/assets` only for the duration of the build. Version and build number come from `pyproject.toml`.
+The script expects a private folder layout next to the repo: `..\signature_android\` for the Android key, and `..\releases\` for the outputs.  No catalogue is built in; the script stops if a data file other than the template sits in `src/assets`. Version and build number come from `pyproject.toml`.
 
-A pre-commit hook in `.githooks/` refuses spreadsheets other than the sample, signing keys and password files. Enable it with `git config core.hooksPath .githooks`.
+A pre-commit hook in `.githooks/` refuses spreadsheets other than the templates, signing keys and password files. Enable it with `git config core.hooksPath .githooks`.
 
 ## Stack
 

@@ -1,14 +1,14 @@
-# --- Private data: the real catalogue and its rules live in ..\prive, outside this repo.
-#     The build script copies them into src/assets only while building.
-src/assets/catalogue materiel.xlsx
-src/assets/regles_catalogue.json
+# --- Private data: the real catalogue lives in ..\prive, outside this repo.
+#     Users import it in the app; it is never built in.
 *.xls
 *.xlsm
 *.csv
 *.ods
-# Any spreadsheet except the made-up sample
+# Any spreadsheet except the made-up templates
 *.xlsx
-!src/assets/catalogue exemple.xlsx
+!src/assets/catalogue_modele.xlsx
+!modele/catalogue_modele.xlsx
+!modele/catalogue_modele.csv
 
 # --- Signing key and passwords
 *.jks

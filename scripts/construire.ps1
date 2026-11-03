@@ -1,12 +1,9 @@
 ﻿<#
-  Construit Prise de Commande (APK Android et/ou Windows) avec le VRAI catalogue.
+  Construit Prise de Commande (APK Android et/ou Windows).
 
-  Le dépôt ne contient qu'un catalogue fictif. Le vrai catalogue et ses règles sont dans
-  ..\prive\ (dossier parent, hors du dépôt). Ce script :
-    1. les copie dans src\assets le temps de la construction ;
-    2. construit ;
-    3. les retire de src\assets, même si la construction échoue ;
-    4. copie les résultats dans ..\releases\.
+  L'application ne contient aucun catalogue réel : chaque utilisateur importe le sien au
+  premier lancement (voir FORMAT_CATALOGUE.md). Ce script construit puis copie les
+  résultats dans ..\releases\.
 
   Version et numéro de build : pyproject.toml ([project] version, [tool.flet] build_number).
   Exemples :  .\scripts\construire.ps1            (APK + Windows)
@@ -21,8 +18,6 @@ $ErrorActionPreference = 'Stop'
 $Depot  = Split-Path $PSScriptRoot -Parent          # ...\prise_commande\prise-commande-public
 $Racine = Split-Path $Depot -Parent                 # ...\prise_commande (privé)
 $Assets = Join-Path $Depot 'src\assets'
-$Prive  = Join-Path $Racine 'prive'
-$Fichiers = @('catalogue materiel.xlsx', 'regles_catalogue.json')
 
 function Stop-Erreur($message) { Write-Host "`nERREUR : $message" -ForegroundColor Red; exit 1 }
 
@@ -35,13 +30,10 @@ $version = [regex]::Match($toml, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
 $build   = [regex]::Match($toml, '(?m)^build_number\s*=\s*(\d+)').Groups[1].Value
 if (-not $version -or -not $build) { Stop-Erreur 'version ou build_number introuvable dans pyproject.toml.' }
 
-foreach ($f in $Fichiers) {
-    $p = Join-Path $Prive $f
-    if (-not (Test-Path $p)) { Stop-Erreur "fichier privé manquant : $p" }
-}
-try {   # Excel ouvert = fichier verrouillé
-    $s = [IO.File]::Open((Join-Path $Prive $Fichiers[0]), 'Open', 'Read', 'None'); $s.Close()
-} catch { Stop-Erreur 'le catalogue Excel est ouvert. Fermez-le puis relancez.' }
+# Seul le catalogue fictif peut partir dans l'application
+$autres = Get-ChildItem $Assets -File |
+    Where-Object { $_.Extension -in '.xlsx', '.xls', '.csv', '.json' -and $_.Name -notlike 'catalogue_modele.*' }
+if ($autres) { Stop-Erreur "fichier(s) de données dans src\assets : $($autres.Name -join ', '). Retirez-les avant de construire." }
 
 if ($Cible -in 'tous', 'apk') {
     $cle = Join-Path $Racine 'signature_android\prise-commande-upload.jks'
@@ -58,8 +50,6 @@ $Releases = Join-Path $Racine 'releases'
 New-Item -ItemType Directory -Force $Releases | Out-Null
 Push-Location $Depot
 try {
-    foreach ($f in $Fichiers) { Copy-Item (Join-Path $Prive $f) $Assets -Force }
-
     if ($Cible -in 'tous', 'apk') {
         $pass = (Get-Content $mdp -TotalCount 1).Trim()
         $env:FLET_ANDROID_SIGNING_KEY_STORE = $cle
@@ -87,8 +77,6 @@ catch {
     $echec = $true
 }
 finally {
-    # Le vrai catalogue ne reste jamais dans le dépôt
-    foreach ($f in $Fichiers) { Remove-Item (Join-Path $Assets $f) -Force -ErrorAction SilentlyContinue }
     'FLET_ANDROID_SIGNING_KEY_STORE', 'FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD',
     'FLET_ANDROID_SIGNING_KEY_PASSWORD', 'FLET_ANDROID_SIGNING_KEY_ALIAS' |
         ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }

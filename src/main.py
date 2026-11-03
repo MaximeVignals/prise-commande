@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import io
 import json
 import os
@@ -20,15 +21,17 @@ try:
 except ImportError:
     fc = None
 
-CATALOGUE_FILENAME = "catalogue materiel.xlsx"            # vrai catalogue : privé, jamais dans le dépôt
-SAMPLE_CATALOGUE_FILENAME = "catalogue exemple.xlsx"      # catalogue fictif fourni avec le code
-RULES_FILENAME = "regles_catalogue.json"                   # règles propres au vrai catalogue : privé
-SAMPLE_RULES_FILENAME = "regles_catalogue.exemple.json"   # règles d'exemple fournies avec le code
+CATALOGUE_STEM = "catalogue_importe"                # catalogue importé par l'utilisateur (+ .xlsx ou .csv)
+CATALOGUE_EXTENSIONS = (".xlsx", ".csv")
+SAMPLE_CATALOGUE_FILENAME = "catalogue_modele.xlsx"  # catalogue fictif fourni avec le code (même format)
 ORDERS_FILENAME = "commandes.json"
 PREFS_FILENAME = "catalogue_perso.json"  # articles masqués, prix modifiés, articles ajoutés
 
-# Les règles propres au catalogue (catégories renommées, sections retirées, articles masqués
-# par défaut…) sont lues dans regles_catalogue.json, à côté du catalogue. Voir rules().
+# Format du catalogue (voir FORMAT_CATALOGUE.md) : 1re feuille (ou CSV), ligne 1 = en-têtes
+# « Catégorie | Article | Prix | Masqué ». Les 3 premières sont obligatoires, « Masqué » est facultative.
+CATALOGUE_COLUMNS = {"categorie": "Catégorie", "article": "Article", "prix": "Prix", "masque": "Masqué"}
+REQUIRED_COLUMNS = ("categorie", "article", "prix")
+YES_VALUES = {"oui", "o", "x", "1", "yes", "y", "vrai", "true"}
 
 # Préfixes des clés d'articles (identifiant stable, indépendant de la position dans l'Excel)
 KEY_EXCEL = "XL:"
@@ -41,82 +44,6 @@ def assets_dir():
     # Dans l'APK / l'exe, Flet fournit le dossier assets via FLET_ASSETS_DIR.
     # En développement (flet run), on retombe sur src/assets/ à côté de ce fichier.
     return Path(os.getenv("FLET_ASSETS_DIR") or str(Path(__file__).parent / "assets"))
-
-
-def _asset(real_name, sample_name):
-    """Le fichier réel s'il est présent (construction sur le PC), sinon l'exemple fourni avec le code."""
-    real = assets_dir() / real_name
-    return real if real.exists() else assets_dir() / sample_name
-
-
-def _as_list(value):
-    if isinstance(value, str):
-        return [value]
-    return [str(v) for v in value] if isinstance(value, list) else []
-
-
-_RULES_CACHE = {}
-
-
-def rules():
-    """Règles du catalogue (regles_catalogue.json, sinon l'exemple). Clés :
-    - textes_retires      : textes supprimés des titres de catégorie ;
-    - categories_renommees: [{"egal" ou "contient": texte(s), "nom": nouveau nom}], dans l'ordre ;
-    - mots_en_majuscules  : mots gardés en majuscules dans les noms de catégorie ;
-    - sections_exclues    : un titre en GRAS contenant un de ces mots fait ignorer toute la section ;
-    - masques_par_defaut  : articles contenant un de ces mots masqués au premier lancement
-                            (réactivables dans « Gérer les articles »).
-    Un fichier absent ou illisible donne des règles vides : l'application démarre quand même."""
-    if "r" in _RULES_CACHE:
-        return _RULES_CACHE["r"]
-    data = {}
-    path = _asset(RULES_FILENAME, SAMPLE_RULES_FILENAME)
-    try:
-        with open(path, encoding="utf-8") as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            data = loaded
-    except (OSError, ValueError) as err:
-        print(f"[règles] {path.name} illisible ou absent : {err}")
-    renames = []
-    for r in data.get("categories_renommees", []) if isinstance(data.get("categories_renommees"), list) else []:
-        if isinstance(r, dict) and r.get("nom") and ("egal" in r or "contient" in r):
-            renames.append({"egal": [t.upper() for t in _as_list(r.get("egal"))],
-                            "contient": [t.upper() for t in _as_list(r.get("contient"))],
-                            "nom": str(r["nom"])})
-    result = {
-        "textes_retires": _as_list(data.get("textes_retires")),
-        "categories_renommees": renames,
-        "mots_en_majuscules": {w.upper() for w in _as_list(data.get("mots_en_majuscules"))},
-        "sections_exclues": tuple(fold(w) for w in _as_list(data.get("sections_exclues"))),
-        "masques_par_defaut": tuple(fold(w) for w in _as_list(data.get("masques_par_defaut"))),
-    }
-    _RULES_CACHE["r"] = result
-    return result
-
-
-def clean_category_name(raw_name):
-    r = rules()
-    name = raw_name
-    for text in r["textes_retires"]:
-        name = name.replace(text, "")
-    name = name.strip()
-    upper = name.upper()
-    for rename in r["categories_renommees"]:
-        if upper in rename["egal"] or any(t in upper for t in rename["contient"]):
-            return rename["nom"]
-
-    words = name.split()
-    cleaned_words = []
-    for w in words:
-        if w.upper() in r["mots_en_majuscules"]:
-            cleaned_words.append(w.upper())
-        elif len(w) > 2 and w.isupper():
-            cleaned_words.append(w.capitalize())
-        else:
-            cleaned_words.append(w if w.islower() else w.capitalize())
-
-    return " ".join(cleaned_words).replace(" / ", " - ")
 
 
 def get_category_icon(category_name):
@@ -149,88 +76,136 @@ def fold(text):
     return "".join(c for c in text if not unicodedata.combining(c))
 
 
-def _contains_any(text, words):
-    folded = fold(text)
-    return any(w in folded for w in words)
+class CatalogueError(Exception):
+    """Fichier catalogue qui ne respecte pas le format (message affiché tel quel à l'utilisateur)."""
 
 
 def catalogue_path():
-    # Vrai catalogue s'il a été copié dans assets (construction), sinon le catalogue d'exemple.
-    return _asset(CATALOGUE_FILENAME, SAMPLE_CATALOGUE_FILENAME)
+    """Catalogue importé (dans le stockage de l'app), ou None s'il n'y en a pas encore."""
+    for ext in CATALOGUE_EXTENSIONS:
+        path = storage_dir() / (CATALOGUE_STEM + ext)
+        if path.exists():
+            return path
+    return None
+
+
+def sample_catalogue_path():
+    return assets_dir() / SAMPLE_CATALOGUE_FILENAME
+
+
+def _read_rows(data, ext):
+    """Lignes brutes (listes de valeurs) d'un .xlsx (1re feuille) ou d'un .csv (; , ou tabulation)."""
+    if ext == ".xlsx":
+        try:
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception as err:
+            raise CatalogueError(f"Fichier Excel illisible ({err}).")
+        try:
+            return [list(row) for row in wb.worksheets[0].iter_rows(values_only=True)]
+        finally:
+            wb.close()
+    if ext == ".csv":
+        for encoding in ("utf-8-sig", "cp1252"):  # UTF-8 (Gemini, Google Sheets) ou Excel Windows
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        first_line = text.split("\n", 1)[0]
+        delimiter = max(";,\t", key=first_line.count)
+        return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    raise CatalogueError("Format non pris en charge : choisissez un fichier .xlsx ou .csv.")
+
+
+def parse_catalogue(data, ext):
+    """Lit un catalogue au format « Catégorie | Article | Prix | Masqué » (voir FORMAT_CATALOGUE.md).
+    Retourne (articles, lignes_ignorées). Articles : dicts Cle, Nom_Article, Categorie, Prix_Excel, Masque.
+    Lève CatalogueError si le fichier est inutilisable (en-têtes manquants, aucun article)."""
+    rows = _read_rows(data, ext.lower())
+    # Ligne d'en-têtes = 1re ligne non vide
+    while rows and all(_is_empty(v) for v in rows[0]):
+        rows.pop(0)
+    if not rows:
+        raise CatalogueError("Le fichier est vide.")
+    headers = [fold(norm_text(v)) if not _is_empty(v) else "" for v in rows[0]]
+    columns = {}
+    for field, label in CATALOGUE_COLUMNS.items():
+        if fold(label) in headers:
+            columns[field] = headers.index(fold(label))
+    missing = [CATALOGUE_COLUMNS[f] for f in REQUIRED_COLUMNS if f not in columns]
+    if missing:
+        raise CatalogueError(
+            "Colonne(s) manquante(s) : " + ", ".join(f"« {m} »" for m in missing) + ".\n"
+            "La ligne 1 doit contenir : " + " | ".join(CATALOGUE_COLUMNS.values()) + ".")
+
+    def cell(row, field):
+        i = columns.get(field)
+        return row[i] if i is not None and i < len(row) else None
+
+    items, skipped, used_keys = [], [], set()
+    for line_no, row in enumerate(rows[1:], start=2):
+        if all(_is_empty(v) for v in row):
+            continue
+        name, category, raw_price = cell(row, "article"), cell(row, "categorie"), cell(row, "prix")
+        price = _to_price(raw_price)
+        if _is_empty(name):
+            skipped.append(f"ligne {line_no} : article sans nom")
+            continue
+        name = norm_text(name)
+        if _is_empty(category):
+            skipped.append(f"ligne {line_no} : « {name} » sans catégorie")
+            continue
+        if price is None:
+            skipped.append(f"ligne {line_no} : « {name} » prix illisible ({raw_price!r})")
+            continue
+
+        # Clé = nom de l'article : prix modifiés et paniers retrouvés après un nouvel import
+        key = KEY_EXCEL + name
+        n = 2
+        while key in used_keys:  # deux articles portant le même nom
+            key = f"{KEY_EXCEL}{name} ({n})"
+            n += 1
+        used_keys.add(key)
+
+        hidden = cell(row, "masque")
+        items.append({
+            "Cle": key,
+            "Nom_Article": name,
+            "Categorie": norm_text(category),
+            "Prix_Excel": price,
+            "Masque": not _is_empty(hidden) and fold(norm_text(hidden)) in YES_VALUES,
+        })
+    if not items:
+        raise CatalogueError("Aucun article valide dans le fichier.\n" + "\n".join(skipped[:5]))
+    return items, skipped
 
 
 def load_catalogue():
-    """Lit la 1re feuille de l'Excel (A = nom, B = tarif neuf, C = tarif occasion).
-    Retourne une liste de dicts : Cle, Nom_Article, Categorie, Prix_Excel.
-
-    Règles de lecture :
-    - ligne en GRAS sans prix          → titre de catégorie ;
-    - ligne avec un prix neuf          → article (en gras ou non) ;
-    - ligne NON grasse sans prix       → détail d'un pack, option ou remarque : ignorée ;
-    - titre contenant un mot de « sections_exclues » (règles) → toute la section est ignorée.
-    """
-    file_path = catalogue_path()
-    if not file_path.exists():
+    """Catalogue importé, ou [] s'il n'y en a pas (ou s'il est devenu illisible)."""
+    path = catalogue_path()
+    if path is None:
+        return []
+    try:
+        return parse_catalogue(path.read_bytes(), path.suffix)[0]
+    except (OSError, CatalogueError) as err:
+        print(f"[catalogue] {path.name} illisible : {err}")
         return []
 
-    # Mode complet (pas read_only) : il faut la mise en forme (gras) pour reconnaître les catégories.
-    wb = load_workbook(file_path, data_only=True)
-    try:
-        ws = wb.worksheets[0]
-        items = []
-        used_keys = set()
-        current_category = "Général"
-        in_excluded_section = False
 
-        for cells in ws.iter_rows(min_col=1, max_col=3):
-            name, raw_neuf, raw_occ = (c.value for c in cells)
-
-            if str(raw_neuf).strip().upper() == "TARIF NEUF": continue
-            if _is_empty(name): continue
-
-            name = norm_text(name)
-            is_bold = bool(cells[0].font and cells[0].font.b)
-            prix_neuf = _to_price(raw_neuf)
-
-            if is_bold and prix_neuf is None:
-                # Titre : catégorie, ou section retirée
-                in_excluded_section = _contains_any(name, rules()["sections_exclues"])
-                if in_excluded_section:
-                    continue
-                if _is_empty(raw_neuf) and _is_empty(raw_occ):
-                    current_category = clean_category_name(name)
-                else:
-                    print(f"[catalogue] Titre ignoré (texte dans les colonnes de prix) : "
-                          f"{name!r} | neuf={raw_neuf!r} | occasion={raw_occ!r}")
-                continue
-
-            if in_excluded_section:
-                continue
-
-            if prix_neuf is None:
-                if not (_is_empty(raw_neuf) and _is_empty(raw_occ)):
-                    # Ligne d'article sans prix neuf lisible : on la signale au lieu de l'ignorer en silence
-                    print(f"[catalogue] Ligne ignorée (prix neuf illisible) : "
-                          f"{name!r} | neuf={raw_neuf!r} | occasion={raw_occ!r}")
-                continue
-
-            # Clé = nom de l'article : ne change pas si on ajoute / supprime des lignes dans l'Excel
-            key = KEY_EXCEL + name
-            n = 2
-            while key in used_keys:  # deux articles portant le même nom
-                key = f"{KEY_EXCEL}{name} ({n})"
-                n += 1
-            used_keys.add(key)
-
-            items.append({
-                "Cle": key,
-                "Nom_Article": name,
-                "Categorie": current_category,
-                "Prix_Excel": prix_neuf,
-            })
-        return items
-    finally:
-        wb.close()
+def install_catalogue(data, ext):
+    """Vérifie puis enregistre un catalogue dans le stockage de l'app (remplace le précédent).
+    Retourne (articles, lignes_ignorées). Lève CatalogueError sans rien changer si le fichier est invalide."""
+    ext = ext.lower()
+    items, skipped = parse_catalogue(data, ext)
+    storage_dir().mkdir(parents=True, exist_ok=True)
+    target = storage_dir() / (CATALOGUE_STEM + ext)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
+    for other in CATALOGUE_EXTENSIONS:  # un seul catalogue à la fois
+        if other != ext:
+            (storage_dir() / (CATALOGUE_STEM + other)).unlink(missing_ok=True)
+    return items, skipped
 
 
 def _to_price(value):
@@ -459,8 +434,8 @@ def load_prefs(excel_items):
         data, warning = None, _set_aside(path, "format inattendu")
 
     if data is None:
-        # Premier lancement : articles listés dans « masques_par_defaut » (règles) masqués par défaut
-        hidden = {it["Cle"] for it in excel_items if _contains_any(it["Nom_Article"], rules()["masques_par_defaut"])}
+        # Premier lancement : articles marqués « Masqué » dans le catalogue masqués par défaut
+        hidden = {it["Cle"] for it in excel_items if it.get("Masque")}
         return {"hidden": hidden, "prices": {}, "custom": []}, warning
 
     hidden = {str(k) for k in data.get("hidden", [])} if isinstance(data.get("hidden"), list) else set()
@@ -534,6 +509,114 @@ def order_count(order):
     return sum(v["quantite"] for v in order["items"].values())
 
 
+# --- IMPORT DU CATALOGUE ---
+
+
+async def pick_catalogue_file(file_picker):
+    """Sélecteur de fichier .xlsx / .csv. Retourne (octets, extension), ou None si annulé.
+    with_data : le contenu est lu par le sélecteur (fonctionne aussi en web, où il n'y a pas de chemin)."""
+    files = await file_picker.pick_files(
+        dialog_title="Choisir le catalogue (.xlsx ou .csv)",
+        file_type=ft.FilePickerFileType.CUSTOM,
+        allowed_extensions=["xlsx", "csv"],
+        with_data=True,
+    )
+    if not files:
+        return None
+    f = files[0]
+    data = f.bytes
+    if data is None and f.path:
+        data = Path(f.path).read_bytes()
+    if data is None:
+        raise CatalogueError("Le fichier choisi n'a pas pu être lu.")
+    return data, os.path.splitext(f.name or f.path or "")[1].lower()
+
+
+def skipped_summary(skipped):
+    """Texte court listant les lignes ignorées à l'import."""
+    if not skipped:
+        return ""
+    lines = "\n".join(f"• {s}" for s in skipped[:8])
+    more = f"\n… et {len(skipped) - 8} autre(s)." if len(skipped) > 8 else ""
+    return f"{len(skipped)} ligne(s) ignorée(s) :\n{lines}{more}"
+
+
+def show_import_screen(page):
+    """Premier lancement (aucun catalogue) : importer un fichier, ou essayer le catalogue d'exemple."""
+    file_picker = ft.FilePicker()  # service : on garde une référence
+    error_text = ft.Text("", color=ft.Colors.RED, text_align=ft.TextAlign.CENTER, selectable=True)
+
+    def start_app(skipped):
+        page.controls.clear()
+        main(page)
+        if skipped:
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Text("Catalogue importé"),
+                content=ft.Text(skipped_summary(skipped), selectable=True),
+                actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
+            ))
+            page.update()
+
+    async def import_file(e=None):
+        try:
+            picked = await pick_catalogue_file(file_picker)
+            if picked is None:
+                return  # annulé
+            _, skipped = install_catalogue(*picked)
+        except (CatalogueError, OSError) as err:
+            error_text.value = f"Import impossible : {err}"
+            page.update()
+            return
+        except Exception as err:  # sélecteur indisponible
+            error_text.value = f"Impossible d'ouvrir le sélecteur de fichiers : {err}"
+            page.update()
+            return
+        start_app(skipped)
+
+    def use_sample(e=None):
+        path = sample_catalogue_path()
+        try:
+            _, skipped = install_catalogue(path.read_bytes(), path.suffix)
+        except (CatalogueError, OSError) as err:
+            error_text.value = f"Catalogue d'exemple illisible : {err}"
+            page.update()
+            return
+        start_app(skipped)
+
+    page.add(ft.SafeArea(expand=True, content=ft.Container(
+        expand=True,
+        alignment=ft.Alignment.CENTER,
+        padding=24,
+        content=ft.Column(
+            [
+                ft.Icon(ft.Icons.UPLOAD_FILE, size=72, color=ft.Colors.BLUE_200),
+                ft.Text("Aucun catalogue", size=22, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Importez votre catalogue : un fichier .xlsx ou .csv dont la 1re ligne contient "
+                    "les colonnes « " + " | ".join(CATALOGUE_COLUMNS.values()) + " ».",
+                    text_align=ft.TextAlign.CENTER, color=ft.Colors.GREY_700,
+                ),
+                ft.Container(height=8),
+                ft.Button(
+                    content="Importer un catalogue",
+                    icon=ft.Icons.FOLDER_OPEN,
+                    on_click=import_file,
+                    style=ft.ButtonStyle(
+                        bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE,
+                        padding=ft.Padding.symmetric(horizontal=24, vertical=16),
+                    ),
+                ),
+                ft.TextButton(content="Essayer avec le catalogue d'exemple", on_click=use_sample),
+                error_text,
+            ],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=12,
+            tight=True,
+        ),
+    )))
+
+
 # --- APPLICATION PRINCIPALE FLET ---
 
 
@@ -546,10 +629,7 @@ def main(page: ft.Page):
     clipboard = ft.Clipboard()  # service : on garde une référence
 
     if not excel_items:
-        page.add(ft.SafeArea(content=ft.Text(
-            f"Fichier catalogue introuvable ou vide.\n({catalogue_path()})",
-            color=ft.Colors.RED,
-        )))
+        show_import_screen(page)
         return
 
     # Défini en premier : utilisé par les sauvegardes dès le démarrage
@@ -1112,6 +1192,17 @@ def main(page: ft.Page):
                     on_click=open_admin,
                 ),
             ),
+            ft.Container(
+                padding=ft.Padding.symmetric(horizontal=8),
+                content=ft.ListTile(
+                    dense=True,
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                    leading=ft.Icon(ft.Icons.UPLOAD_FILE, color=ft.Colors.BLUE_900),
+                    title=ft.Text("Importer un catalogue", weight=ft.FontWeight.W_500),
+                    subtitle=ft.Text("Remplace le catalogue actuel (.xlsx ou .csv)", size=12),
+                    on_click=replace_catalogue,
+                ),
+            ),
             ft.Divider(height=1),
             ft.Container(
                 padding=ft.Padding.only(left=16, top=12, bottom=4),
@@ -1559,6 +1650,43 @@ def main(page: ft.Page):
     is_mobile = page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS)
     camera_available = fc is not None and is_mobile
     camera_state = {"cam": None}
+
+    async def replace_catalogue(e=None):
+        """☰ › Importer un catalogue : remplace le catalogue. Paniers, prix modifiés et articles
+        masqués sont conservés pour les articles qui gardent le même nom."""
+        await close_drawer()
+        try:
+            picked = await pick_catalogue_file(file_picker)
+            if picked is None:
+                return  # annulé
+            items, skipped = install_catalogue(*picked)
+        except Exception as err:  # fichier invalide, illisible, ou sélecteur indisponible
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Text("Import impossible"),
+                content=ft.Text(f"{err}\n\nLe catalogue actuel est conservé.", selectable=True),
+                actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
+            ))
+            refresh()
+            return
+        old_keys = {it["Cle"] for it in excel_items}
+        # Nouveaux articles marqués « Masqué » : masqués comme au premier lancement
+        prefs["hidden"] |= {it["Cle"] for it in items if it["Masque"] and it["Cle"] not in old_keys}
+        excel_items[:] = items
+        rebuild_catalogue()
+        persist_prefs()
+        render_catalogue()
+        render_all()
+        message = f"✅ Catalogue importé : {len(items)} article(s)."
+        if skipped:
+            page.show_dialog(ft.AlertDialog(
+                title=ft.Text("Catalogue importé"),
+                content=ft.Text(f"{len(items)} article(s) importé(s).\n\n{skipped_summary(skipped)}",
+                                selectable=True),
+                actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
+            ))
+        else:
+            show_snack(message)
+        refresh()
 
     photos_tab = ft.Tab(label="📷 Photos")  # libellé mis à jour avec le nombre de photos
     photos_grid = ft.GridView(
