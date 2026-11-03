@@ -56,9 +56,20 @@ python -m unittest discover -s tests -v
 ```
 
 The tests use the sample catalogue and isolated temporary storage under `storage/tests/`.
-The 85 tests cover catalogue imports and visibility, prices, persistence, migration,
+The 95 tests cover catalogue imports and visibility, prices, persistence, migration,
 photos, adaptive layouts, favorites/recents, notes, order duplication/archiving,
-backup validation and rollback, restore UI flows, and web downloads.
+backup validation and rollback, restore UI flows, web downloads, and the module layout.
+
+## Code layout
+
+`src/main.py` only starts the app. The rest of `src/` is split by job:
+
+- `config.py`, `text.py`: shared constants and text/price helpers.
+- `storage.py`, `catalogue.py`, `orders.py`, `photos.py`, `backup.py`: data files, catalogue import, order and photo logic, backups. No UI code.
+- `context.py`: `AppContext`, the state the screens share (orders, preferences, catalogue).
+- `view_*.py`: one module per screen (catalogue, cart, orders, admin, catalogues, photos, backup), each with an `install(ctx)` function. `shell.py` adds navigation and layout; `import_screen.py` is the first-launch screen; `ui.py` holds the theme and widget helpers.
+
+Dependencies go one way: screens → logic → constants. [REFACTOR_NOTES.md](REFACTOR_NOTES.md) explains the split and lists known risks.
 
 ## Build
 
