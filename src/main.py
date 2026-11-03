@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -35,7 +36,10 @@ YES_VALUES = {"oui", "o", "x", "1", "yes", "y", "vrai", "true"}
 
 # Préfixes des clés d'articles (identifiant stable, indépendant de la position dans l'Excel)
 KEY_EXCEL = "XL:"
+KEY_CATALOGUE = "CAT:"
 KEY_PERSO = "PERSO:"
+DEFAULT_CATALOGUE = ""
+DEFAULT_CATALOGUE_LABEL = "Catalogue principal (sans préfixe)"
 
 # --- FONCTIONS DE NETTOYAGE ET UTILITAIRES ---
 
@@ -93,6 +97,17 @@ def sample_catalogue_path():
     return assets_dir() / SAMPLE_CATALOGUE_FILENAME
 
 
+def split_catalogue_category(value):
+    """Préfixe facultatif « Tarif matériel:Caméra », sans crochets."""
+    value = norm_text(value)
+    if ":" not in value:
+        return DEFAULT_CATALOGUE, value
+    catalogue, category = (part.strip() for part in value.split(":", 1))
+    if not catalogue or not category:
+        raise ValueError("catalogue ou catégorie vide")
+    return catalogue, category
+
+
 def _read_rows(data, ext):
     """Lignes brutes (listes de valeurs) d'un .xlsx (1re feuille) ou d'un .csv (; , ou tabulation)."""
     if ext == ".xlsx":
@@ -111,7 +126,9 @@ def _read_rows(data, ext):
                 break
             except UnicodeDecodeError:
                 continue
-        first_line = text.split("\n", 1)[0]
+        else:
+            raise CatalogueError("Encodage CSV illisible : enregistrez le fichier en UTF-8.")
+        first_line = next((line for line in text.splitlines() if line.strip()), "")
         delimiter = max(";,\t", key=first_line.count)
         return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
     raise CatalogueError("Format non pris en charge : choisissez un fichier .xlsx ou .csv.")
@@ -119,7 +136,7 @@ def _read_rows(data, ext):
 
 def parse_catalogue(data, ext):
     """Lit un catalogue au format « Catégorie | Article | Prix | Masqué » (voir FORMAT_CATALOGUE.md).
-    Retourne (articles, lignes_ignorées). Articles : dicts Cle, Nom_Article, Categorie, Prix_Excel, Masque.
+    Retourne (articles, lignes_ignorées). Articles : Cle, Nom_Article, Catalogue, Categorie, Prix_Excel, Masque.
     Lève CatalogueError si le fichier est inutilisable (en-têtes manquants, aucun article)."""
     rows = _read_rows(data, ext.lower())
     # Ligne d'en-têtes = 1re ligne non vide
@@ -155,15 +172,23 @@ def parse_catalogue(data, ext):
         if _is_empty(category):
             skipped.append(f"ligne {line_no} : « {name} » sans catégorie")
             continue
-        if price is None:
+        try:
+            catalogue, category = split_catalogue_category(category)
+        except ValueError:
+            skipped.append(f"ligne {line_no} : « {name} » catalogue ou catégorie vide")
+            continue
+        if price is None or price < 0:
             skipped.append(f"ligne {line_no} : « {name} » prix illisible ({raw_price!r})")
             continue
 
-        # Clé = nom de l'article : prix modifiés et paniers retrouvés après un nouvel import
-        key = KEY_EXCEL + name
+        # Les clés historiques restent identiques pour les catégories sans préfixe.
+        # Un catalogue nommé possède ses propres articles, même si les noms sont identiques.
+        base_key = (KEY_CATALOGUE + json.dumps([catalogue, name], ensure_ascii=False)
+                    if catalogue else KEY_EXCEL + name)
+        key = base_key
         n = 2
         while key in used_keys:  # deux articles portant le même nom
-            key = f"{KEY_EXCEL}{name} ({n})"
+            key = f"{base_key} ({n})"
             n += 1
         used_keys.add(key)
 
@@ -171,7 +196,8 @@ def parse_catalogue(data, ext):
         items.append({
             "Cle": key,
             "Nom_Article": name,
-            "Categorie": norm_text(category),
+            "Catalogue": catalogue,
+            "Categorie": category,
             "Prix_Excel": price,
             "Masque": not _is_empty(hidden) and fold(norm_text(hidden)) in YES_VALUES,
         })
@@ -202,7 +228,7 @@ def install_catalogue(data, ext):
     tmp = target.with_suffix(".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, target)
-    for other in CATALOGUE_EXTENSIONS:  # un seul catalogue à la fois
+    for other in CATALOGUE_EXTENSIONS:  # un seul fichier importé à la fois
         if other != ext:
             (storage_dir() / (CATALOGUE_STEM + other)).unlink(missing_ok=True)
     return items, skipped
@@ -214,7 +240,11 @@ def _to_price(value):
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            price = float(value)
+        except OverflowError:
+            return None
+        return price if math.isfinite(price) else None
     s = str(value).strip()
     for junk in (" ", " ", " ", "€", "EUR", "HT", "TTC"):
         s = s.replace(junk, "")
@@ -225,7 +255,8 @@ def _to_price(value):
         head, _, tail = s.rpartition(".")
         s = head.replace(".", "") + "." + tail
     try:
-        return float(s)
+        price = float(s)
+        return price if math.isfinite(price) else None
     except ValueError:
         return None
 
@@ -372,9 +403,9 @@ def load_orders():
             try:
                 clean = {"Nom": norm_text(line["Nom"]), "Prix": float(line["Prix"]),
                          "quantite": int(line["quantite"])}
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if clean["quantite"] > 0:
+            if clean["quantite"] > 0 and math.isfinite(clean["Prix"]) and clean["Prix"] >= 0:
                 items[str(key)] = clean
         photos = []
         for photo in order.get("photos") if isinstance(order.get("photos"), list) else []:
@@ -405,12 +436,12 @@ def migrate_cart_keys(orders):
     Retourne True si quelque chose a été converti."""
     changed = False
     for order in orders.values():
-        if all(k.startswith((KEY_EXCEL, KEY_PERSO)) for k in order["items"]):
+        if all(k.startswith((KEY_EXCEL, KEY_CATALOGUE, KEY_PERSO)) for k in order["items"]):
             continue
         changed = True
         new_items = {}
         for key, line in order["items"].items():
-            new_key = key if key.startswith((KEY_EXCEL, KEY_PERSO)) else KEY_EXCEL + line["Nom"]
+            new_key = key if key.startswith((KEY_EXCEL, KEY_CATALOGUE, KEY_PERSO)) else KEY_EXCEL + line["Nom"]
             if new_key in new_items:
                 existing = new_items[new_key]
                 if abs(existing["Prix"] - line["Prix"]) < 0.005:
@@ -426,7 +457,7 @@ def migrate_cart_keys(orders):
 
 
 def load_prefs(excel_items):
-    """Réglages du catalogue : {"hidden": set de clés, "prices": {clé: prix}, "custom": [articles ajoutés]}.
+    """Réglages des articles et des catalogues (hidden_catalogues = noms des catalogues masqués).
     Retourne (réglages, avertissement)."""
     path = prefs_path()
     data, warning = read_json(path)
@@ -436,43 +467,73 @@ def load_prefs(excel_items):
     if data is None:
         # Premier lancement : articles marqués « Masqué » dans le catalogue masqués par défaut
         hidden = {it["Cle"] for it in excel_items if it.get("Masque")}
-        return {"hidden": hidden, "prices": {}, "custom": []}, warning
+        return {"hidden": hidden, "hidden_catalogues": set(), "prices": {}, "custom": []}, warning
 
     hidden = {str(k) for k in data.get("hidden", [])} if isinstance(data.get("hidden"), list) else set()
+    hidden_catalogues = ({name for name in data["hidden_catalogues"] if isinstance(name, str)}
+                         if isinstance(data.get("hidden_catalogues"), list) else set())
     prices = {}
     if isinstance(data.get("prices"), dict):
         for k, v in data["prices"].items():
             p = _to_price(v)
-            if p is not None:
+            if p is not None and p >= 0:
                 prices[str(k)] = p
     custom = []
     for c in data.get("custom", []) if isinstance(data.get("custom"), list) else []:
         try:
             article = {"key": str(c["key"]), "name": norm_text(c["name"]),
                        "category": norm_text(c["category"]), "price": float(c["price"])}
-        except (KeyError, TypeError, ValueError):
+            if isinstance(c.get("catalogue"), str) and c["catalogue"].strip():
+                article["catalogue"] = norm_text(c["catalogue"])
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if article["key"].startswith(KEY_PERSO) and article["name"] and article["category"]:
+        if (article["key"].startswith(KEY_PERSO) and article["name"] and article["category"]
+                and math.isfinite(article["price"]) and article["price"] >= 0):
             custom.append(article)
-    return {"hidden": hidden, "prices": prices, "custom": custom}, None
+    prefs = {"hidden": hidden, "hidden_catalogues": hidden_catalogues,
+             "prices": prices, "custom": custom}
+    # Copie locale après renommage / suppression. Une liste vide est un catalogue vidé.
+    snapshot = data.get("catalogue_items")
+    if isinstance(snapshot, list):
+        clean, keys = [], set()
+        for item in snapshot:
+            if not isinstance(item, dict):
+                break
+            key, name = item.get("Cle"), item.get("Nom_Article")
+            catalogue, category = item.get("Catalogue"), item.get("Categorie")
+            price = _to_price(item.get("Prix_Excel"))
+            if (not isinstance(key, str) or not key.startswith((KEY_EXCEL, KEY_CATALOGUE))
+                    or key in keys or not isinstance(name, str) or not name.strip()
+                    or not isinstance(catalogue, str) or not isinstance(category, str) or not category.strip()
+                    or price is None or price < 0):
+                break
+            keys.add(key)
+            clean.append({"Cle": key, "Nom_Article": name, "Catalogue": catalogue,
+                          "Categorie": category, "Prix_Excel": price, "Masque": bool(item.get("Masque"))})
+        else:
+            prefs["catalogue_items"] = clean
+    return prefs, None
 
 
 def save_prefs(prefs):
     write_json(prefs_path(), {
         "hidden": sorted(prefs["hidden"]),
+        "hidden_catalogues": sorted(prefs.get("hidden_catalogues", set())),
         "prices": prefs["prices"],
         "custom": prefs["custom"],
+        **({"catalogue_items": prefs["catalogue_items"]} if "catalogue_items" in prefs else {}),
     })
 
 
 def build_catalogue(excel_items, prefs):
     """Catalogue utilisé par l'app : articles Excel + articles ajoutés, avec prix modifiés et visibilité."""
     entries = []
-    for it in excel_items:
+    for it in prefs.get("catalogue_items", excel_items):
         key = it["Cle"]
         entries.append({
             "Cle": key,
             "Nom_Article": it["Nom_Article"],
+            "Catalogue": it.get("Catalogue", DEFAULT_CATALOGUE),
             "Categorie": it["Categorie"],
             "Prix_Unitaire": prefs["prices"].get(key, it["Prix_Excel"]),
             "Prix_Excel": it["Prix_Excel"],
@@ -483,6 +544,7 @@ def build_catalogue(excel_items, prefs):
         entries.append({
             "Cle": c["key"],
             "Nom_Article": c["name"],
+            "Catalogue": c.get("catalogue", DEFAULT_CATALOGUE),
             "Categorie": c["category"],
             "Prix_Unitaire": c["price"],
             "Prix_Excel": None,
@@ -495,6 +557,11 @@ def build_catalogue(excel_items, prefs):
 def categories_of(entries):
     """Catégories dans l'ordre d'apparition (Excel d'abord, puis catégories créées dans l'app)."""
     return list(dict.fromkeys(e["Categorie"] for e in entries))
+
+
+def catalogues_of(entries):
+    """Catalogues dans l'ordre du fichier, y compris ceux dont tous les articles sont masqués."""
+    return list(dict.fromkeys(e["Catalogue"] for e in entries))
 
 
 def default_order_name():
@@ -668,7 +735,7 @@ def main(page: ft.Page):
         return next((e for e in cat["all"] if e["Cle"] == key), None)
 
     def visible_entries():
-        return [e for e in cat["all"] if e["Visible"]]
+        return [e for e in cat["all"] if e["Visible"] and e["Catalogue"] not in prefs["hidden_catalogues"]]
 
     def new_order(name=None):
         order_id = uuid.uuid4().hex[:8]
@@ -705,10 +772,37 @@ def main(page: ft.Page):
             show_snack(f"⚠️ Sauvegarde des réglages impossible : {err}")
 
     # --- COMPOSANTS UI ---
+    def update_catalogue_selector(dropdown, include_hidden=False):
+        names = catalogues_of(cat["all"])
+        if include_hidden or not names:
+            names = list(dict.fromkeys([DEFAULT_CATALOGUE] + names))
+        if not include_hidden:
+            names = [name for name in names if name not in prefs["hidden_catalogues"]]
+        dropdown.options = [ft.DropdownOption(key=name, text=name or DEFAULT_CATALOGUE_LABEL)
+                            for name in names]
+        if dropdown.value not in names:
+            dropdown.value = names[0] if names else None
+        dropdown.visible = len(names) > 1
+        dropdown.disabled = not names
+
+    def entries_in(catalogue):
+        return [entry for entry in cat["all"] if entry["Catalogue"] == catalogue]
+
+    def managed_catalogues():
+        return list(dict.fromkeys([DEFAULT_CATALOGUE] + catalogues_of(cat["all"])))
+
     async def on_catalogue_filter(e=None):
         render_catalogue()
         refresh()
         await catalogue_listview.scroll_to(offset=0)  # résultats affichés depuis le début
+
+    async def on_catalogue_select(e=None):
+        category_dropdown.value = "Toutes"
+        await on_catalogue_filter()
+
+    catalogue_dropdown = ft.Dropdown(
+        label="Catalogue", options=[], on_select=on_catalogue_select, expand=True,
+    )
 
     search_input = ft.TextField(
         label="Rechercher",
@@ -993,7 +1087,14 @@ def main(page: ft.Page):
     # --- RENDU CATALOGUE ---
     def render_catalogue():
         catalogue_listview.controls.clear()
-        shown = visible_entries()
+        previous_catalogue = catalogue_dropdown.value
+        update_catalogue_selector(catalogue_dropdown)
+        if catalogue_dropdown.value != previous_catalogue:
+            category_dropdown.value = "Toutes"
+        has_catalogue = catalogue_dropdown.value is not None
+        search_input.disabled = not has_catalogue
+        category_dropdown.disabled = not has_catalogue
+        shown = [entry for entry in entries_in(catalogue_dropdown.value) if entry["Visible"]]
         categories = categories_of(shown)
 
         # Filtre : seules les catégories qui ont au moins un article affiché
@@ -1010,10 +1111,20 @@ def main(page: ft.Page):
             and (cat_val == "Toutes" or it["Categorie"] == cat_val)
         ]
 
-        if not shown:
+        if not has_catalogue:
+            catalogue_listview.controls.extend([
+                ft.Text("Aucun catalogue affiché. Activez un catalogue pour parcourir ses articles.",
+                        italic=True, color=ft.Colors.GREY_700),
+                ft.TextButton(content="Gérer les catalogues", on_click=open_catalogue_manager),
+            ])
+        elif not shown:
             catalogue_listview.controls.append(ft.Text(
                 "Aucun article affiché.\nCochez des articles dans ☰ › Gérer les articles.",
                 italic=True, color=ft.Colors.GREY_700,
+            ))
+        elif not filtered:
+            catalogue_listview.controls.append(ft.Text(
+                "Aucun article ne correspond.", italic=True, color=ft.Colors.GREY_700,
             ))
 
         for categorie in categories:
@@ -1160,6 +1271,8 @@ def main(page: ft.Page):
     def render_orders():
         n_total = len(cat["all"])
         n_visible = len(visible_entries())
+        names = managed_catalogues()
+        n_catalogues_visible = sum(name not in prefs["hidden_catalogues"] for name in names)
         controls = [
             ft.Container(
                 padding=ft.Padding.only(left=16, right=16, top=16, bottom=8),
@@ -1180,6 +1293,17 @@ def main(page: ft.Page):
                         expand=True,
                     ),
                 ]),
+            ),
+            ft.Container(
+                padding=ft.Padding.symmetric(horizontal=8),
+                content=ft.ListTile(
+                    dense=True,
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                    leading=ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ft.Colors.BLUE_900),
+                    title=ft.Text("Gérer les catalogues", weight=ft.FontWeight.W_500),
+                    subtitle=ft.Text(f"{n_catalogues_visible} affichés sur {len(names)}", size=12),
+                    on_click=open_catalogue_manager,
+                ),
             ),
             ft.Container(
                 padding=ft.Padding.symmetric(horizontal=8),
@@ -1290,6 +1414,7 @@ def main(page: ft.Page):
         value="Toutes",
         expand=2,
     )
+    admin_catalogue = ft.Dropdown(label="Catalogue", options=[], expand=True)
     # Filtre Tous / Affichés / Masqués (les nombres sont mis à jour par refresh_admin_info)
     admin_visibility = ft.SegmentedButton(
         segments=[
@@ -1314,7 +1439,7 @@ def main(page: ft.Page):
         cat_val = admin_category.value
         visibility = (admin_visibility.selected or ["tous"])[0]
         return [
-            e for e in cat["all"]
+            e for e in entries_in(admin_catalogue.value)
             if matches_search(e["Nom_Article"], search_val)
             and (cat_val == "Toutes" or e["Categorie"] == cat_val)
             and (visibility == "tous" or e["Visible"] == (visibility == "affiches"))
@@ -1325,13 +1450,19 @@ def main(page: ft.Page):
         refresh()
         await admin_listview.scroll_to(offset=0)  # résultats affichés depuis le début
 
+    async def on_admin_catalogue_select(e=None):
+        admin_category.value = "Toutes"
+        await on_admin_filter()
+
+    admin_catalogue.on_select = on_admin_catalogue_select
     admin_search.on_change = on_admin_filter
     admin_category.on_select = on_admin_filter
     admin_visibility.on_change = on_admin_filter
 
     def refresh_admin_info():
-        n_visible = len(visible_entries())
-        n_total = len(cat["all"])
+        entries = entries_in(admin_catalogue.value)
+        n_visible = sum(entry["Visible"] for entry in entries)
+        n_total = len(entries)
         labels = {"tous": f"Tous {n_total}", "affiches": f"Affichés {n_visible}",
                   "masques": f"Masqués {n_total - n_visible}"}
         for segment in admin_visibility.segments:
@@ -1489,7 +1620,8 @@ def main(page: ft.Page):
         admin_rows.clear()
         admin_headers.clear()
 
-        categories = categories_of(cat["all"])
+        update_catalogue_selector(admin_catalogue, include_hidden=True)
+        categories = categories_of(entries_in(admin_catalogue.value))
         admin_category.options = [ft.DropdownOption(key=c, text=c) for c in ["Toutes"] + sorted(categories)]
         if admin_category.value not in categories:
             admin_category.value = "Toutes"
@@ -1527,7 +1659,8 @@ def main(page: ft.Page):
         refresh_admin_info()
 
     def add_article_dialog(e=None):
-        categories = categories_of(cat["all"])
+        catalogue = admin_catalogue.value
+        categories = categories_of(entries_in(catalogue))
         new_cat_key = "__nouvelle__"
         initial_cat = admin_category.value if admin_category.value in categories else (
             categories[0] if categories else new_cat_key)
@@ -1567,6 +1700,7 @@ def main(page: ft.Page):
                 "key": KEY_PERSO + uuid.uuid4().hex[:8],
                 "name": name,
                 "category": category,
+                "catalogue": catalogue,
                 "price": round(price, 2),
             })
             persist_prefs()
@@ -1631,6 +1765,7 @@ def main(page: ft.Page):
         controls=[
             ft.SafeArea(expand=True, content=ft.Column(
                 [
+                    ft.Container(padding=ft.Padding.only(top=6), content=ft.Row([admin_catalogue])),
                     ft.Container(padding=ft.Padding.only(top=6),
                                  content=ft.Row([admin_search, admin_category])),
                     ft.Row([admin_visibility]),
@@ -1641,6 +1776,161 @@ def main(page: ft.Page):
         ],
     )
 
+    # --- ÉCRAN « GÉRER LES CATALOGUES » ---
+    catalogues_listview = ft.ListView(expand=True, spacing=0)
+    catalogues_summary = ft.Text("", weight=ft.FontWeight.W_600)
+
+    def save_catalogue_changes(updated):
+        # Enregistrer avant de modifier l'écran : une erreur disque ne doit pas effacer les données en mémoire.
+        try:
+            save_prefs(updated)
+        except OSError as err:
+            show_snack(f"⚠️ Modification du catalogue impossible : {err}")
+            refresh()
+            return False
+        prefs.clear()
+        prefs.update(updated)
+        rebuild_catalogue()
+        return True
+
+    def refresh_catalogues():
+        render_catalogue()
+        render_catalogues()
+        render_all()
+        refresh()
+
+    def rename_catalogue_dialog(name):
+        if name == DEFAULT_CATALOGUE or name not in managed_catalogues():
+            return
+        name_field = ft.TextField(label="Nom du catalogue", value=name, autofocus=True)
+        error_text = ft.Text("", color=ft.Colors.RED, visible=False)
+
+        def validate(e=None):
+            new_name = norm_text(name_field.value or "")
+            reserved = {fold(n) for n in managed_catalogues() if n != name}
+            reserved.update({fold(DEFAULT_CATALOGUE_LABEL), fold("Catalogue principal")})
+            if not new_name:
+                message = "Indiquez un nom de catalogue."
+            elif ":" in new_name:
+                message = "Le nom du catalogue ne peut pas contenir de deux-points."
+            elif fold(new_name) in reserved:
+                message = "Ce nom de catalogue est déjà utilisé."
+            else:
+                message = None
+            if message:
+                error_text.value, error_text.visible = message, True
+                refresh()
+                return
+            if new_name != name:
+                snapshot = [{**item, "Catalogue": new_name if item["Catalogue"] == name else item["Catalogue"]}
+                            for item in prefs.get("catalogue_items", excel_items)]
+                custom = [{**item, "catalogue": new_name} if item.get("catalogue", DEFAULT_CATALOGUE) == name
+                          else dict(item) for item in prefs["custom"]]
+                hidden_catalogues = set(prefs["hidden_catalogues"])
+                was_hidden = name in hidden_catalogues
+                hidden_catalogues.discard(name)
+                hidden_catalogues.discard(new_name)
+                if was_hidden:
+                    hidden_catalogues.add(new_name)
+                if not save_catalogue_changes({**prefs, "catalogue_items": snapshot, "custom": custom,
+                                               "hidden_catalogues": hidden_catalogues}):
+                    return
+                for dropdown in (catalogue_dropdown, admin_catalogue):
+                    if dropdown.value == name:
+                        dropdown.value = new_name
+            page.pop_dialog()
+            refresh_catalogues()
+
+        name_field.on_submit = validate
+        page.show_dialog(ft.AlertDialog(
+            modal=True, title=ft.Text("Renommer le catalogue"),
+            content=ft.Column([name_field, error_text], tight=True, width=400),
+            actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
+                     ft.Button(content="Renommer", on_click=validate)],
+        ))
+
+    def remove_catalogue_dialog(name):
+        is_main = name == DEFAULT_CATALOGUE
+        label = name or DEFAULT_CATALOGUE_LABEL
+
+        def confirm(e=None):
+            keys = {item["Cle"] for item in entries_in(name)}
+            snapshot = [dict(item) for item in prefs.get("catalogue_items", excel_items)
+                        if item["Catalogue"] != name]
+            custom = [dict(item) for item in prefs["custom"]
+                      if item.get("catalogue", DEFAULT_CATALOGUE) != name]
+            hidden_catalogues = set(prefs["hidden_catalogues"])
+            if not is_main:
+                hidden_catalogues.discard(name)
+            if not save_catalogue_changes({**prefs, "catalogue_items": snapshot, "custom": custom,
+                    "hidden_catalogues": hidden_catalogues, "hidden": prefs["hidden"] - keys,
+                    "prices": {key: value for key, value in prefs["prices"].items() if key not in keys}}):
+                return
+            page.pop_dialog()
+            refresh_catalogues()
+
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Vider le catalogue principal ?" if is_main else "Supprimer le catalogue ?"),
+            content=ft.Text(f"Les {len(entries_in(name))} article(s) de « {label} » seront retirés, "
+                            "y compris les articles ajoutés manuellement.\n"
+                            "Les commandes existantes sont conservées. Un nouvel import peut rétablir ces articles."),
+            actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
+                     ft.Button(content="Vider" if is_main else "Supprimer", on_click=confirm,
+                               style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE))],
+        ))
+
+    def set_catalogue_visible(name, visible):
+        if visible:
+            prefs["hidden_catalogues"].discard(name)
+        else:
+            prefs["hidden_catalogues"].add(name)
+        persist_prefs()
+        render_catalogue()
+        render_catalogues()
+        render_orders()
+        refresh()
+
+    def render_catalogues():
+        catalogues_listview.controls.clear()
+        names = managed_catalogues()
+        n_visible = sum(name not in prefs["hidden_catalogues"] for name in names)
+        catalogues_summary.value = f"{n_visible} catalogue(s) affiché(s) sur {len(names)}"
+        for name in names:
+            label = name or DEFAULT_CATALOGUE_LABEL
+            visible = name not in prefs["hidden_catalogues"]
+            count = len(entries_in(name))
+            actions = ([ft.PopupMenuItem(content="Vider le catalogue principal", icon=ft.Icons.DELETE_OUTLINE,
+                                         disabled=count == 0, on_click=lambda e: remove_catalogue_dialog(DEFAULT_CATALOGUE))]
+                       if name == DEFAULT_CATALOGUE else [
+                           ft.PopupMenuItem(content="Renommer", icon=ft.Icons.EDIT_OUTLINED,
+                                            on_click=lambda e, n=name: rename_catalogue_dialog(n)),
+                           ft.PopupMenuItem(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE,
+                                            on_click=lambda e, n=name: remove_catalogue_dialog(n)),
+                       ])
+            catalogues_listview.controls.append(ft.ListTile(
+                title=ft.Text(label, weight=ft.FontWeight.W_500),
+                subtitle=ft.Text(f"{'Affiché' if visible else 'Masqué'} · {count} article(s)"),
+                trailing=ft.Row([
+                    ft.Switch(value=visible, tooltip=f"Afficher « {label} »",
+                              on_change=lambda e, n=name: set_catalogue_visible(n, e.control.value)),
+                    ft.PopupMenuButton(icon=ft.Icons.MORE_VERT, tooltip=f"Options « {label} »", items=actions),
+                ], width=104, spacing=0),
+            ))
+
+    catalogues_view = ft.View(
+        route="/catalogues",
+        padding=10,
+        appbar=ft.AppBar(title=ft.Text("Gérer les catalogues", weight=ft.FontWeight.W_600),
+                        bgcolor=ft.Colors.BLUE_50),
+        controls=[ft.SafeArea(expand=True, content=ft.Column([
+            ft.Text("Affichez ou masquez les catalogues. Le menu ⋮ permet de les gérer. "
+                    "Les commandes existantes sont conservées.", color=ft.Colors.GREY_700),
+            catalogues_summary,
+            catalogues_listview,
+        ], expand=True))],
+    )
+
     # =====================================================================
     # --- PHOTOS DE LA COMMANDE (matériel à remplacer) ---
     # =====================================================================
@@ -1648,12 +1938,12 @@ def main(page: ft.Page):
     file_picker = ft.FilePicker()  # services : on garde une référence
     share = ft.Share()
     is_mobile = page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS)
-    camera_available = fc is not None and is_mobile
+    camera_available = fc is not None and is_mobile and not page.web
     camera_state = {"cam": None}
 
     async def replace_catalogue(e=None):
         """☰ › Importer un catalogue : remplace le catalogue. Paniers, prix modifiés et articles
-        masqués sont conservés pour les articles qui gardent le même nom."""
+        masqués sont conservés pour les articles qui gardent le même nom et catalogue."""
         await close_drawer()
         try:
             picked = await pick_catalogue_file(file_picker)
@@ -1668,7 +1958,8 @@ def main(page: ft.Page):
             ))
             refresh()
             return
-        old_keys = {it["Cle"] for it in excel_items}
+        old_keys = {it["Cle"] for it in cat["all"] if not it["Perso"]}
+        prefs.pop("catalogue_items", None)  # le nouveau fichier remplace les modifications locales
         # Nouveaux articles marqués « Masqué » : masqués comme au premier lancement
         prefs["hidden"] |= {it["Cle"] for it in items if it["Masque"] and it["Cle"] not in old_keys}
         excel_items[:] = items
@@ -1741,6 +2032,16 @@ def main(page: ft.Page):
             pass
         return photo
 
+    def photo_src(order_id, photo):
+        path = photo_path(order_id, photo)
+        # Le navigateur ne peut pas ouvrir un chemin local du serveur Python.
+        if page.web:
+            try:
+                return path.read_bytes()
+            except OSError:
+                return b""
+        return str(path)
+
     def render_photos():
         order_id = state["current"]
         photos = order_photos()
@@ -1756,7 +2057,7 @@ def main(page: ft.Page):
                 content=ft.Column(
                     [
                         ft.Image(
-                            src=str(photo_path(order_id, photo)),
+                            src=photo_src(order_id, photo),
                             fit=ft.BoxFit.COVER,
                             height=150,
                             cache_width=400,  # vignette : évite de décoder l'image en pleine taille
@@ -1816,7 +2117,7 @@ def main(page: ft.Page):
             title=ft.Text(title),
             content=ft.Column(
                 [
-                    ft.Image(src=image_src or str(photo_path(order_id, photo)), fit=ft.BoxFit.CONTAIN,
+                    ft.Image(src=image_src or photo_src(order_id, photo), fit=ft.BoxFit.CONTAIN,
                              height=260, cache_width=1080, border_radius=8),
                     label_field,
                     ft.Text(f"Prise le {added}", size=11, color=ft.Colors.GREY_600),
@@ -1850,6 +2151,7 @@ def main(page: ft.Page):
                 dialog_title="Choisir des photos",
                 file_type=ft.FilePickerFileType.IMAGE,
                 allow_multiple=True,
+                with_data=page.web,
             )
         except Exception as err:  # sélecteur indisponible
             show_snack(f"Impossible d'ouvrir la galerie : {err}")
@@ -1859,12 +2161,13 @@ def main(page: ft.Page):
             return  # annulé
         added, failed = 0, 0
         for f in files:
-            if not f.path:
+            data = f.bytes if page.web else None
+            if data is None and not f.path:
                 failed += 1
                 continue
-            ext = os.path.splitext(f.name or f.path)[1].lower() or ".jpg"
+            ext = os.path.splitext(f.name or f.path or "")[1].lower() or ".jpg"
             try:
-                add_photo_file(order_id, source_path=f.path, ext=ext)
+                add_photo_file(order_id, source_path=f.path, data=data, ext=ext)
                 added += 1
             except OSError:
                 failed += 1
@@ -1923,7 +2226,7 @@ def main(page: ft.Page):
             return
         if not chosen:
             return  # annulé
-        if not is_mobile:
+        if not is_mobile and not page.web:
             # Sur PC, le sélecteur renvoie l'emplacement choisi : c'est l'app qui écrit le fichier
             target = Path(chosen)
             if target.suffix.lower() != ".zip":
@@ -2029,11 +2332,20 @@ def main(page: ft.Page):
         await close_drawer()
         await page.push_route("/articles")
 
+    async def open_catalogue_manager(e=None):
+        await close_drawer()
+        await page.push_route("/catalogues")
+
     async def route_change(e=None):
         if page.route == "/articles":
             if len(page.views) == 1:
+                admin_catalogue.value = catalogue_dropdown.value
                 render_admin()
                 page.views.append(admin_view)
+        elif page.route == "/catalogues":
+            if len(page.views) == 1:
+                render_catalogues()
+                page.views.append(catalogues_view)
         elif page.route == "/photo":
             if len(page.views) == 1 and camera_available and state["current"] is not None:
                 page.views.append(build_camera_view())
@@ -2062,6 +2374,7 @@ def main(page: ft.Page):
 
     content_catalogue = ft.Column(
         [
+            ft.Container(padding=ft.Padding.only(top=6), content=ft.Row([catalogue_dropdown])),
             # marge en haut : l'étiquette « Catégorie » n'est plus coupée sous les onglets
             ft.Container(padding=ft.Padding.only(top=6),
                          content=ft.Row([search_input, category_dropdown])),
@@ -2109,7 +2422,7 @@ def main(page: ft.Page):
     share_photos_btn = ft.Button(
         content="Partager les photos", icon=ft.Icons.SHARE, on_click=share_photos,
         style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
-        expand=True, visible=is_mobile,
+        expand=True, visible=is_mobile and not page.web,
     )
     zip_photos_btn = ft.OutlinedButton(
         content="Enregistrer en ZIP", icon=ft.Icons.FOLDER_ZIP_OUTLINED, on_click=save_photos_zip,
@@ -2226,4 +2539,5 @@ def main(page: ft.Page):
 
 
 # Démarrage de l'application
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)
