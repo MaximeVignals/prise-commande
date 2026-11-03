@@ -252,7 +252,7 @@ def install(ctx: AppContext) -> None:
 
         return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes
 
-    def render_orders():
+    def drawer_header():
         n_total = len(ctx.cat["all"])
         n_visible = len(ctx.visible_entries())
         names = ctx.managed_catalogues()
@@ -318,6 +318,52 @@ def install(ctx: AppContext) -> None:
                                 color=ft.Colors.ON_SURFACE_VARIANT),
             ),
         ]
+        return controls
+
+    def order_tile(order_id, order):
+        is_active = order_id == ctx.state["current"]
+        created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
+        on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes = order_handlers(order_id)
+
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.ListTile(
+                dense=True,
+                shape=ft.RoundedRectangleBorder(radius=10),
+                title=ui.text(
+                    order["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                    weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
+                ),
+                subtitle=ui.text(
+                    f"{created} · {order_count(order)} art. · {fmt_eur(order_total(order))}"
+                    + (f" · 📷 {len(order['photos'])}" if order.get("photos") else ""),
+                    size=12,
+                ),
+                trailing=ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    tooltip="Options",
+                    items=[
+                        ft.PopupMenuItem(content="Remarques", icon=ft.Icons.NOTES, on_click=on_notes),
+                        ft.PopupMenuItem(content="Dupliquer", icon=ft.Icons.CONTENT_COPY,
+                            on_click=on_duplicate),
+                        ft.PopupMenuItem(content="Réactiver" if order.get("archived") else "Archiver",
+                            icon=ft.Icons.UNARCHIVE_OUTLINED if order.get("archived") else ft.Icons.ARCHIVE_OUTLINED,
+                            on_click=on_archive),
+                        ft.PopupMenuItem(content="Renommer", icon=ft.Icons.EDIT_OUTLINED,
+                                         on_click=on_rename),
+                        ft.PopupMenuItem(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE,
+                                         on_click=on_delete),
+                    ],
+                ),
+                selected=is_active,
+                selected_color=ft.Colors.PRIMARY,
+                selected_tile_color=ft.Colors.PRIMARY_CONTAINER,
+                on_click=on_select,
+            ),
+        )
+
+    def render_orders():
+        controls = drawer_header()
 
         if not ctx.orders:
             controls.append(ft.Container(
@@ -334,48 +380,7 @@ def install(ctx: AppContext) -> None:
             order = ctx.orders[order_id]
             if bool(order.get("archived")) != ctx.state["show_archived"]:
                 continue
-            is_active = order_id == ctx.state["current"]
-            created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
-            on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes = order_handlers(order_id)
-
-            controls.append(
-                ft.Container(
-                    padding=ft.Padding.symmetric(horizontal=8),
-                    content=ft.ListTile(
-                        dense=True,
-                        shape=ft.RoundedRectangleBorder(radius=10),
-                        title=ui.text(
-                            order["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
-                            weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
-                        ),
-                        subtitle=ui.text(
-                            f"{created} · {order_count(order)} art. · {fmt_eur(order_total(order))}"
-                            + (f" · 📷 {len(order['photos'])}" if order.get("photos") else ""),
-                            size=12,
-                        ),
-                        trailing=ft.PopupMenuButton(
-                            icon=ft.Icons.MORE_VERT,
-                            tooltip="Options",
-                            items=[
-                                ft.PopupMenuItem(content="Remarques", icon=ft.Icons.NOTES, on_click=on_notes),
-                                ft.PopupMenuItem(content="Dupliquer", icon=ft.Icons.CONTENT_COPY,
-                                    on_click=on_duplicate),
-                                ft.PopupMenuItem(content="Réactiver" if order.get("archived") else "Archiver",
-                                    icon=ft.Icons.UNARCHIVE_OUTLINED if order.get("archived") else ft.Icons.ARCHIVE_OUTLINED,
-                                    on_click=on_archive),
-                                ft.PopupMenuItem(content="Renommer", icon=ft.Icons.EDIT_OUTLINED,
-                                                 on_click=on_rename),
-                                ft.PopupMenuItem(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE,
-                                                 on_click=on_delete),
-                            ],
-                        ),
-                        selected=is_active,
-                        selected_color=ft.Colors.PRIMARY,
-                        selected_tile_color=ft.Colors.PRIMARY_CONTAINER,
-                        on_click=on_select,
-                    ),
-                )
-            )
+            controls.append(order_tile(order_id, order))
 
         archives = sum(bool(order.get("archived")) for order in ctx.orders.values())
         controls.insert(6, ft.Container(padding=8, content=ft.Row([
