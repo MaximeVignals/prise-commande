@@ -3,6 +3,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import flet as ft
+
+from test_app import StorageTest, TestPage
+
 
 class ModuleSplitTest(unittest.TestCase):
     def test_text_helpers_moved(self):
@@ -55,6 +59,41 @@ class ModuleSplitTest(unittest.TestCase):
         from src import main as app, import_screen
         for name in ["pick_catalogue_file", "skipped_summary", "request_restore", "show_import_screen"]:
             self.assertIs(getattr(app, name), getattr(import_screen, name))
+
+
+# Fonctions partagées que chaque écran doit trouver sur le contexte après main().
+# Task 6 : les méthodes d'AppContext ; les tâches suivantes ajoutent les fonctions des écrans.
+EXPECTED_CTX_FUNCTIONS = [
+    "show_snack", "refresh", "rebuild_catalogue", "entry_by_key", "visible_entries", "new_order",
+    "current_order", "cart", "persist", "persist_prefs", "dialog_width", "update_catalogue_selector",
+    "entries_in", "managed_catalogues",
+]
+
+
+class AppContextTest(StorageTest):
+    def install_sample(self):
+        from src import main as app
+        app.install_catalogue(app.sample_catalogue_path().read_bytes(), ".xlsx")
+        return app
+
+    def test_context_persist_reports_failure(self):
+        from src import context, storage
+        app = self.install_sample()
+        page = TestPage()
+        ctx = context.AppContext(page, app.load_catalogue())
+        with mock.patch.object(storage, "save_orders", side_effect=OSError("x")):
+            ctx.persist()
+        self.assertIsInstance(page.dialogs[-1], ft.SnackBar)
+        self.assertTrue(page.dialogs[-1].content.value.startswith("⚠️ Sauvegarde impossible"))
+
+    def test_every_ctx_handler_is_callable_after_install(self):
+        app = self.install_sample()
+        page = TestPage()
+        app.main(page)
+        ctx = page.data["ctx"]
+        for name in EXPECTED_CTX_FUNCTIONS:
+            with self.subTest(name=name):
+                self.assertTrue(callable(getattr(ctx, name, None)))
 
 
 if __name__ == "__main__":

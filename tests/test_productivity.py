@@ -13,6 +13,7 @@ import zipfile
 import flet as ft
 
 from src import main as app
+from src import storage
 from src import backup
 from test_app import StorageTest, TestPage
 
@@ -67,7 +68,7 @@ class ProductivityTests(StorageTest):
 
     def test_failed_favorite_save_does_not_change_star_or_disk(self):
         star = self.page.find(ft.IconButton, tooltip="Favori : Écran principal")
-        with patch.object(app, "save_prefs", side_effect=OSError("test")):
+        with patch.object(storage, "save_prefs", side_effect=OSError("test")):
             star.on_click(None)
         self.assertEqual(star.icon, ft.Icons.STAR_BORDER)
         self.assertEqual(app.load_prefs([])[0]["favorites"], set())
@@ -171,13 +172,13 @@ class ProductivityTests(StorageTest):
         self.page.find(ft.IconButton, tooltip="Remarques de la commande").on_click(None)
         field = self.page.find(ft.TextField, label="Remarques")
         field.value = "À ne pas enregistrer"
-        with patch.object(app, "save_orders", side_effect=OSError("test")):
+        with patch.object(storage, "save_orders", side_effect=OSError("test")):
             self.page.find(ft.Button, content="Enregistrer").on_click(None)
         self.assertIn("Enregistrement impossible", field.error)
         self.assertNotIn("notes", app.load_orders()[0]["demo"])
 
     def test_archive_save_failure_keeps_active_order(self):
-        with patch.object(app, "save_orders", side_effect=OSError("test")):
+        with patch.object(storage, "save_orders", side_effect=OSError("test")):
             asyncio.run(self.menu("Archiver").on_click(None))
         self.assertNotIn("archived", app.load_orders()[0]["demo"])
         self.assertEqual(app.load_orders()[1], "demo")

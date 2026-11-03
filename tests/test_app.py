@@ -12,6 +12,7 @@ import flet as ft
 from openpyxl import Workbook
 
 from src import main as app
+from src import storage
 
 
 class StorageTest(unittest.TestCase):
@@ -528,7 +529,7 @@ class CatalogueBrowsingTests(StorageTest):
     def test_edit_save_failure_preserves_catalogue(self):
         self.open_catalogue_manager()
         self.catalogue_action("Services", "Supprimer")
-        with patch.object(app, "save_prefs", side_effect=OSError("Test")):
+        with patch.object(storage, "save_prefs", side_effect=OSError("Test")):
             self.page.find(ft.Button, content="Supprimer").on_click(None)
         self.page.find(ft.Switch, tooltip="Afficher « Services »")
         self.assertNotIn("catalogue_items", app.load_prefs([])[0])

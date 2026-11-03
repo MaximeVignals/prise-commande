@@ -9,7 +9,7 @@ from pathlib import Path
 import flet as ft
 
 if __package__:
-    from . import ui, backup
+    from . import ui, backup, storage
     from .ui import get_category_icon
     from .config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
                          DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
@@ -25,9 +25,11 @@ if __package__:
                             install_catalogue, load_catalogue, parse_catalogue, sample_catalogue_path,
                             split_catalogue_category)
     from .import_screen import pick_catalogue_file, request_restore, show_import_screen, skipped_summary
+    from .context import AppContext
 else:
     import ui
     import backup
+    import storage
     from ui import get_category_icon
     from config import (ALL_CATALOGUES, CATALOGUE_COLUMNS, CATALOGUE_EXTENSIONS, CATALOGUE_STEM, DEFAULT_CATALOGUE,
                         DEFAULT_CATALOGUE_LABEL, KEY_CATALOGUE, KEY_EXCEL, KEY_PERSO, ORDERS_FILENAME, PREFS_FILENAME,
@@ -43,6 +45,7 @@ else:
                            install_catalogue, load_catalogue, parse_catalogue, sample_catalogue_path,
                            split_catalogue_category)
     from import_screen import pick_catalogue_file, request_restore, show_import_screen, skipped_summary
+    from context import AppContext
 
 try:
     # Appareil photo intégré (Android) : extension officielle flet-camera.
@@ -73,124 +76,17 @@ def main(page: ft.Page):
     ui.configure_page(page)
 
     excel_items = load_catalogue()
-    clipboard = ft.Clipboard()  # service : on garde une référence
 
     if not excel_items:
         show_import_screen(page)
         return
 
-    # Défini en premier : utilisé par les sauvegardes dès le démarrage
-    def show_snack(message):
-        page.show_dialog(ft.SnackBar(ui.text(message, color=ft.Colors.ON_INVERSE_SURFACE), duration=ft.Duration(milliseconds=2000)))
-
-    def refresh():
-        """Envoie toutes les modifications à l'écran.
-
-        Flet 1.0 rafraîchit l'écran tout seul à la fin d'un clic, SAUF si quelque chose a déjà
-        été rafraîchi pendant ce clic. Or afficher un message (SnackBar) ou une boîte de dialogue
-        le fait : le message apparaissait, mais le panier, le total, le menu… restaient figés.
-        On appelle donc refresh() à la fin de chaque action qui affiche un message ou une boîte.
-        """
-        page.update()
-
-    startup_warnings = []
-
-    # --- ÉTAT : plusieurs commandes nommées, une seule active à la fois ---
-    orders, current_id, warning = load_orders()
-    if warning:
-        startup_warnings.append(warning)
-    migrated = migrate_cart_keys(orders)
-    state = {"current": current_id, "tab": 0, "show_archived": False}
-    # Keep presentation state and mounted fields across window/fold transitions.
-    quantity_drafts = {}
-    catalogue_grids = []
-    catalogue_rows = {}
-    catalogue_badges = {}
-    favorite_buttons = {}
-    window = {"layout": ui.WindowLayout(getattr(page, "width", None) or 390,
-                                         getattr(page, "height", None) or 800)}
-
-    # --- RÉGLAGES DU CATALOGUE (articles affichés, prix, articles ajoutés) ---
-    prefs, warning = load_prefs(excel_items)
-    if warning:
-        startup_warnings.append(warning)
-    cat = {"all": build_catalogue(excel_items, prefs)}
-
-    def rebuild_catalogue():
-        cat["all"] = build_catalogue(excel_items, prefs)
-
-    def entry_by_key(key):
-        return next((e for e in cat["all"] if e["Cle"] == key), None)
-
-    def visible_entries():
-        return [e for e in cat["all"] if e["Visible"] and e["Catalogue"] not in prefs["hidden_catalogues"]]
-
-    def new_order(name=None):
-        order_id = uuid.uuid4().hex[:8]
-        orders[order_id] = {
-            "name": (name or "").strip() or default_order_name(),
-            "created": datetime.now().isoformat(timespec="minutes"),
-            "items": {},
-            "photos": [],
-        }
-        state["current"] = order_id
-        return order_id
-
-    # Aucune création automatique : s'il n'y a pas encore de commande,
-    # l'écran d'aide « Créer une commande » s'affiche à la place du catalogue.
-    if state["current"] not in orders or orders[state["current"]].get("archived"):
-        state["current"] = next((k for k in reversed(orders) if not orders[k].get("archived")), None)
-
-    def current_order():
-        return orders[state["current"]]
-
-    def cart():
-        return current_order()["items"]
-
-    def persist():
-        try:
-            save_orders(orders, state["current"])
-        except OSError as err:
-            show_snack(f"⚠️ Sauvegarde impossible : {err}")
-
-    def persist_prefs():
-        try:
-            save_prefs(prefs)
-        except OSError as err:
-            show_snack(f"⚠️ Sauvegarde des réglages impossible : {err}")
-
-    # --- COMPOSANTS UI ---
-    def dialog_width():
-        return max(160, min(420, (getattr(page, "width", None) or 390) - 80))
-
-    def update_catalogue_selector(dropdown, include_hidden=False):
-        names = catalogues_of(cat["all"])
-        if include_hidden or not names:
-            names = list(dict.fromkeys([DEFAULT_CATALOGUE] + names))
-        if not include_hidden:
-            names = [name for name in names if name not in prefs["hidden_catalogues"]]
-        dropdown.options = [ft.DropdownOption(key=name, text=name or DEFAULT_CATALOGUE_LABEL)
-                            for name in names]
-        choices = names[:]
-        if not include_hidden and len(names) > 1:
-            choices.append(ALL_CATALOGUES)
-            dropdown.options.insert(0, ft.DropdownOption(key=ALL_CATALOGUES, text="Tous les catalogues"))
-        if dropdown.value not in choices:
-            dropdown.value = names[0] if names else None
-        dropdown.visible = len(names) > 1
-        dropdown.disabled = not names
-
-    def entries_in(catalogue):
-        if catalogue == ALL_CATALOGUES:
-            return [entry for entry in cat["all"] if entry["Catalogue"] not in prefs["hidden_catalogues"]]
-        return [entry for entry in cat["all"] if entry["Catalogue"] == catalogue]
-
-    def managed_catalogues():
-        return list(dict.fromkeys([DEFAULT_CATALOGUE] + catalogues_of(cat["all"])))
+    ctx = AppContext(page, excel_items)
+    page.data = {"ctx": ctx}  # les tests retrouvent le contexte via page.data["ctx"]
 
     async def on_catalogue_filter(e=None):
         render_catalogue()
-        refresh()
+        ctx.refresh()
         await catalogue_listview.scroll_to(offset=0)  # résultats affichés depuis le début
 
     async def on_catalogue_select(e=None):
@@ -241,7 +137,7 @@ def main(page: ft.Page):
     # --- LOGIQUE ---
 
     def go_to_tab(index):
-        state["tab"] = index
+        ctx.state["tab"] = index
         navigation.selected_index = index
         layout_workspace()
 
@@ -249,13 +145,13 @@ def main(page: ft.Page):
         try:
             qty = int(qty)
         except (TypeError, ValueError):
-            show_snack("Quantité invalide.")
+            ctx.show_snack("Quantité invalide.")
             return
         if qty <= 0:
-            show_snack("Quantité invalide.")
+            ctx.show_snack("Quantité invalide.")
             return
 
-        items = cart()
+        items = ctx.cart()
         if item["Cle"] in items:
             items[item["Cle"]]["quantite"] += qty
         else:
@@ -264,14 +160,14 @@ def main(page: ft.Page):
                 "Prix": item["Prix_Unitaire"],
                 "quantite": qty,
             }
-        persist()
-        prefs["recent"] = [item["Cle"]] + [key for key in prefs["recent"] if key != item["Cle"]][:19]
-        persist_prefs()
+        ctx.persist()
+        ctx.prefs["recent"] = [item["Cle"]] + [key for key in ctx.prefs["recent"] if key != item["Cle"]][:19]
+        ctx.persist_prefs()
         if browse_mode.selected == ["recent"]:
             render_catalogue()
         render_all()
-        show_snack(f"✅ Ajouté au panier (x{qty})")
-        refresh()
+        ctx.show_snack(f"✅ Ajouté au panier (x{qty})")
+        ctx.refresh()
 
     def change_qty_field(field, delta):
         try:
@@ -281,38 +177,38 @@ def main(page: ft.Page):
         field.value = str(max(1, current + delta))
 
     def update_cart_qty(id_art, delta):
-        items = cart()
+        items = ctx.cart()
         if id_art not in items:
             return
         if items[id_art]["quantite"] + delta <= 0:
             remove_cart_line(id_art)  # « − » sur une quantité de 1 : retire la ligne (annulable)
             return
         items[id_art]["quantite"] += delta
-        persist()
+        ctx.persist()
         render_all()
-        refresh()
+        ctx.refresh()
 
     def remove_cart_line(id_art):
         """Retire une ligne du panier, avec « Annuler » dans le message pendant 8 secondes."""
-        order_id = state["current"]
-        items = cart()
+        order_id = ctx.state["current"]
+        items = ctx.cart()
         if id_art not in items:
             return
         position = list(items).index(id_art)
         line = items.pop(id_art)
-        persist()
+        ctx.persist()
         render_all()
 
         def undo(e):
-            if order_id not in orders or id_art in orders[order_id]["items"]:
+            if order_id not in ctx.orders or id_art in ctx.orders[order_id]["items"]:
                 return
-            restored = list(orders[order_id]["items"].items())
+            restored = list(ctx.orders[order_id]["items"].items())
             restored.insert(position, (id_art, line))
-            orders[order_id]["items"].clear()
-            orders[order_id]["items"].update(restored)
-            persist()
+            ctx.orders[order_id]["items"].clear()
+            ctx.orders[order_id]["items"].update(restored)
+            ctx.persist()
             render_all()
-            refresh()
+            ctx.refresh()
 
         page.show_dialog(ft.SnackBar(
             ui.text("🗑️ Ligne retirée du panier.", color=ft.Colors.ON_INVERSE_SURFACE),
@@ -321,12 +217,12 @@ def main(page: ft.Page):
             persist=False,
             duration=ft.Duration(seconds=8),  # le temps de toucher « Annuler »
         ))
-        refresh()
+        ctx.refresh()
 
     def set_cart_qty(id_art, field, subtotal_text, final):
         """Quantité tapée au clavier. Enregistrée à chaque chiffre ; à la sortie du champ,
         une saisie vide ou à 0 est annulée (pour retirer une ligne : la corbeille)."""
-        items = cart()
+        items = ctx.cart()
         if id_art not in items:
             return
         try:
@@ -336,7 +232,7 @@ def main(page: ft.Page):
         if qty > 0:
             if qty != items[id_art]["quantite"]:
                 items[id_art]["quantite"] = qty
-                persist()
+                ctx.persist()
                 subtotal_text.value = fmt_eur(items[id_art]["Prix"] * qty)
                 update_cart_summary()
                 render_orders()
@@ -344,14 +240,14 @@ def main(page: ft.Page):
                 field.value = str(qty)
         elif final:
             field.value = str(items[id_art]["quantite"])
-            show_snack("Quantité invalide. Pour retirer la ligne, utilisez la corbeille.")
-        refresh()
+            ctx.show_snack("Quantité invalide. Pour retirer la ligne, utilisez la corbeille.")
+        ctx.refresh()
 
     def clear_cart(e):
-        order = current_order()
+        order = ctx.current_order()
         if not order["items"]:
-            show_snack("Le panier est déjà vide.")
-            refresh()
+            ctx.show_snack("Le panier est déjà vide.")
+            ctx.refresh()
             return
 
         def confirm(e):
@@ -359,10 +255,10 @@ def main(page: ft.Page):
             if not order["items"]:  # double appui
                 return
             order["items"].clear()
-            persist()
+            ctx.persist()
             render_all()
-            show_snack("🗑️ Panier vidé.")
-            refresh()
+            ctx.show_snack("🗑️ Panier vidé.")
+            ctx.refresh()
 
         page.show_dialog(ft.AlertDialog(
             scrollable=True,
@@ -380,13 +276,13 @@ def main(page: ft.Page):
         ))
 
     async def copy_email_text(e):
-        order = current_order()
+        order = ctx.current_order()
         if not order["items"]:
-            show_snack("Le panier est vide.")
+            ctx.show_snack("Le panier est vide.")
             return
 
-        await clipboard.set(order_email_text(order))
-        show_snack("📋 Texte copié dans le presse-papiers !")
+        await ctx.clipboard.set(order_email_text(order))
+        ctx.show_snack("📋 Texte copié dans le presse-papiers !")
 
     # --- GESTION DES COMMANDES ---
 
@@ -397,14 +293,14 @@ def main(page: ft.Page):
         await page.close_drawer()
 
     async def select_order(order_id):
-        if order_id not in orders:
+        if order_id not in ctx.orders:
             return
-        state["current"] = order_id
-        persist()
+        ctx.state["current"] = order_id
+        ctx.persist()
         render_all()
         await close_drawer()
-        show_snack(f"Commande active : {orders[order_id]['name']}")
-        refresh()
+        ctx.show_snack(f"Commande active : {ctx.orders[order_id]['name']}")
+        ctx.refresh()
 
     def ask_name(title, initial, on_ok):
         """Petite boîte de dialogue avec un champ texte (création / renommage)."""
@@ -419,7 +315,7 @@ def main(page: ft.Page):
         def validate(e=None):
             page.pop_dialog()
             on_ok(name_field.value)
-            refresh()
+            ctx.refresh()
 
         name_field.on_submit = validate
         page.show_dialog(ft.AlertDialog(
@@ -437,12 +333,12 @@ def main(page: ft.Page):
         await close_drawer()
 
         def done(name):
-            new_order(name)
-            state["show_archived"] = False
-            persist()
+            ctx.new_order(name)
+            ctx.state["show_archived"] = False
+            ctx.persist()
             render_all()
             go_to_tab(0)  # retour au catalogue pour remplir la nouvelle commande
-            show_snack(f"🆕 Nouvelle commande : {current_order()['name']}")
+            ctx.show_snack(f"🆕 Nouvelle commande : {ctx.current_order()['name']}")
 
         ask_name("Nouvelle commande", default_order_name(), done)
 
@@ -451,12 +347,12 @@ def main(page: ft.Page):
 
         def done(name):
             name = name.strip()
-            if name and order_id in orders:
-                orders[order_id]["name"] = name
-                persist()
+            if name and order_id in ctx.orders:
+                ctx.orders[order_id]["name"] = name
+                ctx.persist()
                 render_all()
 
-        ask_name("Renommer la commande", orders[order_id]["name"], done)
+        ask_name("Renommer la commande", ctx.orders[order_id]["name"], done)
 
     async def duplicate_order_dialog(order_id):
         await close_drawer()
@@ -464,8 +360,8 @@ def main(page: ft.Page):
         def done(name):
             new_id = None
             try:
-                new_id, duplicate = duplicate_order(order_id, orders[order_id], name, orders)
-                save_orders({**orders, new_id: duplicate}, new_id)
+                new_id, duplicate = duplicate_order(order_id, ctx.orders[order_id], name, ctx.orders)
+                storage.save_orders({**ctx.orders, new_id: duplicate}, new_id)
             except OSError as err:
                 if new_id:
                     folder = photos_dir(new_id)
@@ -473,49 +369,49 @@ def main(page: ft.Page):
                         path.unlink()
                     if folder.exists():
                         folder.rmdir()
-                show_snack(f"Duplication impossible : {err}")
+                ctx.show_snack(f"Duplication impossible : {err}")
                 return
-            orders[new_id] = duplicate
-            state.update(current=new_id, show_archived=False)
+            ctx.orders[new_id] = duplicate
+            ctx.state.update(current=new_id, show_archived=False)
             render_all()
             go_to_tab(0)
-            show_snack("Commande dupliquée, avec ses remarques et photos.")
+            ctx.show_snack("Commande dupliquée, avec ses remarques et photos.")
 
-        ask_name("Dupliquer la commande", f"{orders[order_id]['name']} — copie", done)
+        ask_name("Dupliquer la commande", f"{ctx.orders[order_id]['name']} — copie", done)
 
     async def archive_order(order_id):
         await close_drawer()
-        updated = copy.deepcopy(orders)
+        updated = copy.deepcopy(ctx.orders)
         archived = not updated[order_id].get("archived", False)
         if archived:
             updated[order_id]["archived"] = True
         else:
             updated[order_id].pop("archived", None)
-        selected = state["current"]
+        selected = ctx.state["current"]
         if archived and selected == order_id:
             selected = next((k for k in reversed(updated) if not updated[k].get("archived")), None)
         elif not archived:
             selected = order_id
         try:
-            save_orders(updated, selected)
+            storage.save_orders(updated, selected)
         except OSError as err:
-            show_snack(f"Archivage impossible : {err}")
-            refresh()
+            ctx.show_snack(f"Archivage impossible : {err}")
+            ctx.refresh()
             return
-        orders.clear()
-        orders.update(updated)
-        state["current"] = selected
-        state["show_archived"] = archived
+        ctx.orders.clear()
+        ctx.orders.update(updated)
+        ctx.state["current"] = selected
+        ctx.state["show_archived"] = archived
         render_all()
-        show_snack("Commande archivée." if archived else "Commande réactivée.")
-        refresh()
+        ctx.show_snack("Commande archivée." if archived else "Commande réactivée.")
+        ctx.refresh()
 
     def show_order_group(e=None):
-        state["show_archived"] = not state["show_archived"]
+        ctx.state["show_archived"] = not ctx.state["show_archived"]
         render_orders()
 
     def edit_notes(e=None, key=None):
-        order = current_order()
+        order = ctx.current_order()
         target = order if key is None else order["items"][key]
         attribute = "notes" if key is None else "note"
         field = ui.field(label="Remarques", value=target.get(attribute, ""),
@@ -530,42 +426,42 @@ def main(page: ft.Page):
             else:
                 target.pop(attribute, None)
             try:
-                save_orders(orders, state["current"])
+                storage.save_orders(ctx.orders, ctx.state["current"])
             except OSError as err:
                 if previous is None:
                     target.pop(attribute, None)
                 else:
                     target[attribute] = previous
                 field.error = f"Enregistrement impossible : {err}"
-                refresh()
+                ctx.refresh()
                 return
             page.pop_dialog()
             render_all()
-            refresh()
+            ctx.refresh()
 
         page.show_dialog(ft.AlertDialog(scrollable=True, title=ui.text(
             "Remarques de la commande" if key is None else target["Nom"]),
-            content=ft.Container(content=field, width=dialog_width()),
+            content=ft.Container(content=field, width=ctx.dialog_width()),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
                      ui.button(content="Enregistrer", on_click=save)]))
 
     async def delete_order_dialog(order_id):
         await close_drawer()
-        order = orders[order_id]
+        order = ctx.orders[order_id]
 
         def confirm(e):
             page.pop_dialog()
-            if order_id not in orders:  # double appui sur « Supprimer »
+            if order_id not in ctx.orders:  # double appui sur « Supprimer »
                 return
-            del orders[order_id]
+            del ctx.orders[order_id]
             shutil.rmtree(photos_dir(order_id), ignore_errors=True)  # ses photos aussi
-            if state["current"] == order_id:
+            if ctx.state["current"] == order_id:
                 # la plus récente restante, ou aucune → écran d'aide
-                state["current"] = next((k for k in reversed(orders) if not orders[k].get("archived")), None)
-            persist()
+                ctx.state["current"] = next((k for k in reversed(ctx.orders) if not ctx.orders[k].get("archived")), None)
+            ctx.persist()
             render_all()
-            show_snack(f"🗑️ « {order['name']} » supprimée.")
-            refresh()
+            ctx.show_snack(f"🗑️ « {order['name']} » supprimée.")
+            ctx.refresh()
 
         page.show_dialog(ft.AlertDialog(
             scrollable=True,
@@ -590,18 +486,18 @@ def main(page: ft.Page):
     # --- RENDU CATALOGUE ---
     def render_catalogue():
         catalogue_listview.controls.clear()
-        catalogue_grids.clear()
-        catalogue_rows.clear()
-        catalogue_badges.clear()
-        favorite_buttons.clear()
+        ctx.catalogue_grids.clear()
+        ctx.catalogue_rows.clear()
+        ctx.catalogue_badges.clear()
+        ctx.favorite_buttons.clear()
         previous_catalogue = catalogue_dropdown.value
-        update_catalogue_selector(catalogue_dropdown)
+        ctx.update_catalogue_selector(catalogue_dropdown)
         if catalogue_dropdown.value != previous_catalogue:
             category_dropdown.value = "Toutes"
         has_catalogue = catalogue_dropdown.value is not None
         search_input.disabled = not has_catalogue
         category_dropdown.disabled = not has_catalogue
-        shown = [entry for entry in entries_in(catalogue_dropdown.value) if entry["Visible"]]
+        shown = [entry for entry in ctx.entries_in(catalogue_dropdown.value) if entry["Visible"]]
         categories = categories_of(shown)
 
         # Filtre : seules les catégories qui ont au moins un article affiché
@@ -619,10 +515,10 @@ def main(page: ft.Page):
         ]
         mode = (browse_mode.selected or ["all"])[0]
         if mode == "favorites":
-            filtered = [it for it in filtered if it["Cle"] in prefs["favorites"]]
+            filtered = [it for it in filtered if it["Cle"] in ctx.prefs["favorites"]]
         elif mode == "recent":
-            filtered = sorted((it for it in filtered if it["Cle"] in prefs["recent"]),
-                              key=lambda it: prefs["recent"].index(it["Cle"]))
+            filtered = sorted((it for it in filtered if it["Cle"] in ctx.prefs["recent"]),
+                              key=lambda it: ctx.prefs["recent"].index(it["Cle"]))
         # Recents keep chronological order instead of being regrouped by category.
         groups = [("Articles récents", filtered)] if mode == "recent" else [
             (category, [it for it in filtered if it["Categorie"] == category]) for category in categories]
@@ -671,17 +567,17 @@ def main(page: ft.Page):
             # The grid responds to the pane width, including resized windows.
             group_cards = []
             for current_item in group:
-                draft_key = (state["current"], current_item["Cle"])
+                draft_key = (ctx.state["current"], current_item["Cle"])
                 qty_field = ui.field(
-                    value=quantity_drafts.get(draft_key, "1"), width=64, text_align=ft.TextAlign.CENTER,
+                    value=ctx.quantity_drafts.get(draft_key, "1"), width=64, text_align=ft.TextAlign.CENTER,
                     keyboard_type=ft.KeyboardType.NUMBER,
                     input_filter=ft.NumbersOnlyInputFilter(),
                     dense=True, tooltip=f"Quantité à ajouter : {current_item['Nom_Article']}",
-                    on_change=lambda e, k=draft_key: quantity_drafts.__setitem__(k, e.control.value),
+                    on_change=lambda e, k=draft_key: ctx.quantity_drafts.__setitem__(k, e.control.value),
                 )
                 def adjust(e, q=qty_field, k=draft_key, delta=1):
                     change_qty_field(q, delta)
-                    quantity_drafts[k] = q.value
+                    ctx.quantity_drafts[k] = q.value
 
                 # Flèches ▼ / ▲ pour ajuster la quantité à ajouter (minimum 1)
                 btn_down = ft.IconButton(
@@ -707,14 +603,14 @@ def main(page: ft.Page):
 
                 name = ui.text(current_item["Nom_Article"], size=15, weight=ft.FontWeight.W_600)
                 favorite = ft.IconButton(
-                    icon=ft.Icons.STAR if current_item["Cle"] in prefs["favorites"] else ft.Icons.STAR_BORDER,
+                    icon=ft.Icons.STAR if current_item["Cle"] in ctx.prefs["favorites"] else ft.Icons.STAR_BORDER,
                     icon_color=ui.PRIMARY, width=48, height=48,
                     tooltip=f"Favori : {current_item['Nom_Article']}",
                     on_click=lambda e, k=current_item["Cle"]: toggle_favorite(k),
                 )
-                favorite_buttons[current_item["Cle"]] = favorite
+                ctx.favorite_buttons[current_item["Cle"]] = favorite
                 badge = ui.text("", size=12, color=ui.PRIMARY, visible=False)
-                catalogue_badges[current_item["Cle"]] = badge
+                ctx.catalogue_badges[current_item["Cle"]] = badge
                 origin = ui.text(current_item["Catalogue"] or "Catalogue principal", size=11, color=ui.MUTED,
                                  visible=catalogue_dropdown.value == ALL_CATALOGUES)
                 description = ft.Column([name, origin, badge], spacing=2, tight=True)
@@ -732,14 +628,14 @@ def main(page: ft.Page):
                     actions,
                 ], spacing=12)
                 card = ui.item_card(compact)
-                catalogue_rows[id(card)] = (compact, wide)
+                ctx.catalogue_rows[id(card)] = (compact, wide)
                 group_cards.append(card)
             grid = ft.ResponsiveRow(group_cards, spacing=8, run_spacing=8)
-            catalogue_grids.append(grid)
+            ctx.catalogue_grids.append(grid)
             catalogue_listview.controls.append(grid)
         apply_catalogue_columns()
         update_catalogue_badges()
-        state["catalogue_order"] = state["current"]
+        ctx.state["catalogue_order"] = ctx.state["current"]
         # Plus besoin de page.update() : Flet 1.0 met à jour automatiquement
         # après chaque gestionnaire d'événement et après main().
 
@@ -748,30 +644,30 @@ def main(page: ft.Page):
         category_dropdown.value = "Toutes"
         browse_mode.selected = ["all"]
         render_catalogue()
-        refresh()
+        ctx.refresh()
 
     def toggle_favorite(key):
-        previous = set(prefs["favorites"])
-        if key in prefs["favorites"]:
-            prefs["favorites"].remove(key)
+        previous = set(ctx.prefs["favorites"])
+        if key in ctx.prefs["favorites"]:
+            ctx.prefs["favorites"].remove(key)
         else:
-            prefs["favorites"].add(key)
+            ctx.prefs["favorites"].add(key)
         try:
-            save_prefs(prefs)
+            storage.save_prefs(ctx.prefs)
         except OSError as err:
-            prefs["favorites"] = previous
-            show_snack(f"Favori non enregistré : {err}")
-            refresh()
+            ctx.prefs["favorites"] = previous
+            ctx.show_snack(f"Favori non enregistré : {err}")
+            ctx.refresh()
             return
         if browse_mode.selected == ["favorites"]:
             render_catalogue()
         else:
-            favorite_buttons[key].icon = ft.Icons.STAR if key in prefs["favorites"] else ft.Icons.STAR_BORDER
-        refresh()
+            ctx.favorite_buttons[key].icon = ft.Icons.STAR if key in ctx.prefs["favorites"] else ft.Icons.STAR_BORDER
+        ctx.refresh()
 
     def update_catalogue_badges():
-        items = cart() if state["current"] else {}
-        for key, badge in catalogue_badges.items():
+        items = ctx.cart() if ctx.state["current"] else {}
+        for key, badge in ctx.catalogue_badges.items():
             quantity = items.get(key, {}).get("quantite", 0)
             badge.value = f"Déjà {quantity} dans la commande" if quantity else ""
             badge.visible = quantity > 0
@@ -781,7 +677,7 @@ def main(page: ft.Page):
         def clear(attribute, value):
             setattr(attribute, "value", value)
             render_catalogue()
-            refresh()
+            ctx.refresh()
         if catalogue_dropdown.visible:
             value = catalogue_dropdown.value
             tags.append(ft.Chip(label=(value or "Catalogue principal") if value != ALL_CATALOGUES else "Tous les catalogues",
@@ -800,7 +696,7 @@ def main(page: ft.Page):
     # --- RENDU PANIER ---
     def render_cart():
         cart_listview.controls.clear()
-        items = cart()
+        items = ctx.cart()
 
         if not items:
             cart_listview.controls.append(ui.empty(
@@ -859,14 +755,14 @@ def main(page: ft.Page):
 
     def update_cart_summary():
         """Total en bas du panier et nombre d'articles dans l'onglet « Panier »."""
-        order = current_order()
+        order = ctx.current_order()
         total_text.value = fmt_eur(order_total(order))
         n = order_count(order)
         cart_tab.label = f"Panier ({n})" if n else "Panier"
         cart_info.value = f"{n} article(s) · {len(order['items'])} référence(s)"
         order_info.value = f"{n} article(s) · {fmt_eur(order_total(order))}"
         compact_cart_btn.content = f"{n} article(s) · {fmt_eur(order_total(order))}"
-        notes_preview.value = current_order().get("notes", "")
+        notes_preview.value = ctx.current_order().get("notes", "")
         notes_preview.visible = bool(notes_preview.value)
         archive_banner.visible = bool(order.get("archived"))
         copy_order_btn.disabled = not bool(order["items"])
@@ -898,10 +794,10 @@ def main(page: ft.Page):
         return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes
 
     def render_orders():
-        n_total = len(cat["all"])
-        n_visible = len(visible_entries())
-        names = managed_catalogues()
-        n_catalogues_visible = sum(name not in prefs["hidden_catalogues"] for name in names)
+        n_total = len(ctx.cat["all"])
+        n_visible = len(ctx.visible_entries())
+        names = ctx.managed_catalogues()
+        n_catalogues_visible = sum(name not in ctx.prefs["hidden_catalogues"] for name in names)
         controls = [
             ft.Container(
                 padding=ft.Padding.only(left=16, right=16, top=16, bottom=8),
@@ -964,7 +860,7 @@ def main(page: ft.Page):
             ),
         ]
 
-        if not orders:
+        if not ctx.orders:
             controls.append(ft.Container(
                 padding=ft.Padding.symmetric(horizontal=16, vertical=8),
                 content=ui.text(
@@ -975,11 +871,11 @@ def main(page: ft.Page):
             ))
 
         # Les plus récentes en premier (le dict garde l'ordre de création)
-        for order_id in reversed(list(orders)):
-            order = orders[order_id]
-            if bool(order.get("archived")) != state["show_archived"]:
+        for order_id in reversed(list(ctx.orders)):
+            order = ctx.orders[order_id]
+            if bool(order.get("archived")) != ctx.state["show_archived"]:
                 continue
-            is_active = order_id == state["current"]
+            is_active = order_id == ctx.state["current"]
             created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
             on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes = order_handlers(order_id)
 
@@ -1022,9 +918,9 @@ def main(page: ft.Page):
                 )
             )
 
-        archives = sum(bool(order.get("archived")) for order in orders.values())
+        archives = sum(bool(order.get("archived")) for order in ctx.orders.values())
         controls.insert(6, ft.Container(padding=8, content=ft.Row([
-            ft.TextButton(content="Commandes actives" if state["show_archived"] else f"Archives ({archives})",
+            ft.TextButton(content="Commandes actives" if ctx.state["show_archived"] else f"Archives ({archives})",
                 icon=ft.Icons.ARCHIVE_OUTLINED, on_click=show_order_group, expand=True),
         ])))
         controls.extend([
@@ -1032,21 +928,21 @@ def main(page: ft.Page):
             ft.ListTile(title=ui.text("Sauvegarder / restaurer"), leading=ft.Icon(ft.Icons.BACKUP_OUTLINED),
                         on_click=open_backup_view),
         ])
-        if not any(bool(order.get("archived")) == state["show_archived"] for order in orders.values()):
+        if not any(bool(order.get("archived")) == ctx.state["show_archived"] for order in ctx.orders.values()):
             controls.append(ft.Container(padding=16, content=ui.text(
-                "Aucune commande archivée." if state["show_archived"] else "Aucune commande active.", color=ui.MUTED)))
+                "Aucune commande archivée." if ctx.state["show_archived"] else "Aucune commande active.", color=ui.MUTED)))
         drawer.controls = controls
 
     def render_all():
-        if state.get("catalogue_order", object()) != state["current"]:
+        if ctx.state.get("catalogue_order", object()) != ctx.state["current"]:
             render_catalogue()
-        if state["current"] is None:
+        if ctx.state["current"] is None:
             # Pas de commande : écran d'aide à la place du catalogue / panier
             appbar_title.value = "Prise de Commande"
             order_info.value = ""
             body.content = empty_state
         else:
-            appbar_title.value = current_order()["name"]
+            appbar_title.value = ctx.current_order()["name"]
             body.content = workspace
             render_cart()
             render_photos()
@@ -1095,7 +991,7 @@ def main(page: ft.Page):
         cat_val = admin_category.value
         visibility = (admin_visibility.selected or ["tous"])[0]
         return [
-            e for e in entries_in(admin_catalogue.value)
+            e for e in ctx.entries_in(admin_catalogue.value)
             if matches_search(e["Nom_Article"], search_val)
             and (cat_val == "Toutes" or e["Categorie"] == cat_val)
             and (visibility == "tous" or e["Visible"] == (visibility == "affiches"))
@@ -1103,7 +999,7 @@ def main(page: ft.Page):
 
     async def on_admin_filter(e=None):
         render_admin()
-        refresh()
+        ctx.refresh()
         await admin_listview.scroll_to(offset=0)  # résultats affichés depuis le début
 
     async def on_admin_catalogue_select(e=None):
@@ -1116,7 +1012,7 @@ def main(page: ft.Page):
     admin_visibility.on_change = on_admin_filter
 
     def refresh_admin_info():
-        entries = entries_in(admin_catalogue.value)
+        entries = ctx.entries_in(admin_catalogue.value)
         n_visible = sum(entry["Visible"] for entry in entries)
         n_total = len(entries)
         labels = {"tous": "Tous", "affiches": "Affichés", "masques": "Masqués"}
@@ -1126,7 +1022,7 @@ def main(page: ft.Page):
 
     def refresh_admin_row(key):
         refs = admin_rows.get(key)
-        entry = entry_by_key(key)
+        entry = ctx.entry_by_key(key)
         if not refs or not entry:
             return
         refs["checkbox"].value = entry["Visible"]
@@ -1146,7 +1042,7 @@ def main(page: ft.Page):
         if categorie not in admin_headers:
             return
         checkbox, counter, keys = admin_headers[categorie]
-        entries = [entry_by_key(k) for k in keys]
+        entries = [ctx.entry_by_key(k) for k in keys]
         n_visible = sum(1 for e in entries if e and e["Visible"])
         # Case « mixte » (−) seulement quand une partie est cochée. Une case à 3 états à False
         # s'affiche « − » dans Flet : on ne garde le 3e état que lorsqu'il sert.
@@ -1158,61 +1054,61 @@ def main(page: ft.Page):
     def set_visible(keys, visible):
         for key in keys:
             if visible:
-                prefs["hidden"].discard(key)
+                ctx.prefs["hidden"].discard(key)
             else:
-                prefs["hidden"].add(key)
-        persist_prefs()
-        rebuild_catalogue()
+                ctx.prefs["hidden"].add(key)
+        ctx.persist_prefs()
+        ctx.rebuild_catalogue()
         for key in keys:
             refresh_admin_row(key)
-        for categorie in {entry_by_key(k)["Categorie"] for k in keys if entry_by_key(k)}:
+        for categorie in {ctx.entry_by_key(k)["Categorie"] for k in keys if ctx.entry_by_key(k)}:
             refresh_admin_header(categorie)
         refresh_admin_info()
-        refresh()
+        ctx.refresh()
 
     def toggle_category(categorie):
         # Tout est coché → on décoche tout ; sinon on coche tout (articles affichés par le filtre)
         keys = admin_headers[categorie][2]
-        all_visible = all(entry_by_key(k)["Visible"] for k in keys)
+        all_visible = all(ctx.entry_by_key(k)["Visible"] for k in keys)
         set_visible(keys, not all_visible)
 
     def commit_price(key, field, final):
         """Enregistre le prix saisi. final=True (sortie du champ / Entrée) : remet le champ au propre."""
-        entry = entry_by_key(key)
+        entry = ctx.entry_by_key(key)
         if not entry:
             return
         price = _to_price(field.value)
         if price is None or price < 0:
             if final:
                 field.value = fmt_input(entry['Prix_Unitaire'])
-                show_snack("Prix invalide : saisissez un nombre, ex. 1190 ou 79,50.")
-                refresh()
+                ctx.show_snack("Prix invalide : saisissez un nombre, ex. 1190 ou 79,50.")
+                ctx.refresh()
             return
         price = round(price, 2)
         if entry["Perso"]:
-            for c in prefs["custom"]:
+            for c in ctx.prefs["custom"]:
                 if c["key"] == key:
                     c["price"] = price
         elif abs(price - entry["Prix_Excel"]) < 0.005:
-            prefs["prices"].pop(key, None)  # retour au prix de l'Excel
+            ctx.prefs["prices"].pop(key, None)  # retour au prix de l'Excel
         else:
-            prefs["prices"][key] = price
+            ctx.prefs["prices"][key] = price
         if abs(price - entry["Prix_Unitaire"]) >= 0.005:
-            persist_prefs()
-            rebuild_catalogue()
+            ctx.persist_prefs()
+            ctx.rebuild_catalogue()
             refresh_admin_row(key)
         if final:
             field.value = fmt_input(price)
 
     def reset_price(key, field):
-        prefs["prices"].pop(key, None)
-        persist_prefs()
-        rebuild_catalogue()
-        entry = entry_by_key(key)
+        ctx.prefs["prices"].pop(key, None)
+        ctx.persist_prefs()
+        ctx.rebuild_catalogue()
+        entry = ctx.entry_by_key(key)
         field.value = fmt_input(entry['Prix_Unitaire'])
         refresh_admin_row(key)
-        show_snack(f"Prix Excel rétabli : {fmt_eur(entry['Prix_Unitaire'])}")
-        refresh()
+        ctx.show_snack(f"Prix Excel rétabli : {fmt_eur(entry['Prix_Unitaire'])}")
+        ctx.refresh()
 
     def admin_row(entry):
         key = entry["Cle"]
@@ -1266,7 +1162,7 @@ def main(page: ft.Page):
         return card
 
     def apply_admin_density():
-        width = window["layout"].width
+        width = ctx.window["layout"].width
         columns = 3 if width >= 1100 else 2 if width >= 680 else 1
         card_width = (width - 32 - (columns - 1) * 8) / columns
         for refs in admin_rows.values():
@@ -1277,8 +1173,8 @@ def main(page: ft.Page):
         admin_rows.clear()
         admin_headers.clear()
 
-        update_catalogue_selector(admin_catalogue, include_hidden=True)
-        categories = categories_of(entries_in(admin_catalogue.value))
+        ctx.update_catalogue_selector(admin_catalogue, include_hidden=True)
+        categories = categories_of(ctx.entries_in(admin_catalogue.value))
         admin_category.options = [ft.DropdownOption(key=c, text=c) for c in ["Toutes"] + sorted(categories)]
         if admin_category.value not in categories:
             admin_category.value = "Toutes"
@@ -1323,7 +1219,7 @@ def main(page: ft.Page):
 
     def add_article_dialog(e=None):
         catalogue = admin_catalogue.value
-        categories = categories_of(entries_in(catalogue))
+        categories = categories_of(ctx.entries_in(catalogue))
         new_cat_key = "__nouvelle__"
         initial_cat = admin_category.value if admin_category.value in categories else (
             categories[0] if categories else new_cat_key)
@@ -1338,7 +1234,7 @@ def main(page: ft.Page):
             options=[ft.DropdownOption(key=c, text=c) for c in categories]
                     + [ft.DropdownOption(key=new_cat_key, text="➕ Nouvelle catégorie…")],
             value=initial_cat,
-            width=dialog_width(),
+            width=ctx.dialog_width(),
         )
         cat_field.on_select = lambda e: setattr(new_cat_field, "visible", cat_field.value == new_cat_key)
         price_field = ui.field(label="Prix unitaire", suffix="€", keyboard_type=ft.KeyboardType.NUMBER)
@@ -1359,18 +1255,18 @@ def main(page: ft.Page):
             if price is None or price < 0:
                 return fail(price_field, "Prix invalide : saisissez un nombre, ex. 1190 ou 79,50.")
             page.pop_dialog()
-            prefs["custom"].append({
+            ctx.prefs["custom"].append({
                 "key": KEY_PERSO + uuid.uuid4().hex[:8],
                 "name": name,
                 "category": category,
                 "catalogue": catalogue,
                 "price": round(price, 2),
             })
-            persist_prefs()
-            rebuild_catalogue()
+            ctx.persist_prefs()
+            ctx.rebuild_catalogue()
             render_admin()
-            show_snack(f"➕ « {name} » ajouté dans « {category} »")
-            refresh()
+            ctx.show_snack(f"➕ « {name} » ajouté dans « {category} »")
+            ctx.refresh()
 
         name_field.on_submit = validate
         price_field.on_submit = validate
@@ -1379,7 +1275,7 @@ def main(page: ft.Page):
             modal=True,
             title=ui.text("Ajouter un article"),
             content=ft.Column([name_field, cat_field, new_cat_field, price_field],
-                              tight=True, spacing=12, width=dialog_width()),
+                              tight=True, spacing=12, width=ctx.dialog_width()),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
                 ui.button(content="Ajouter", on_click=validate),
@@ -1387,21 +1283,21 @@ def main(page: ft.Page):
         ))
 
     def delete_article_dialog(key):
-        entry = entry_by_key(key)
+        entry = ctx.entry_by_key(key)
         if not entry:
             return
 
         def confirm(e):
             page.pop_dialog()
-            if not any(c["key"] == key for c in prefs["custom"]):  # double appui
+            if not any(c["key"] == key for c in ctx.prefs["custom"]):  # double appui
                 return
-            prefs["custom"] = [c for c in prefs["custom"] if c["key"] != key]
-            prefs["hidden"].discard(key)
-            persist_prefs()
-            rebuild_catalogue()
+            ctx.prefs["custom"] = [c for c in ctx.prefs["custom"] if c["key"] != key]
+            ctx.prefs["hidden"].discard(key)
+            ctx.persist_prefs()
+            ctx.rebuild_catalogue()
             render_admin()
-            show_snack(f"🗑️ « {entry['Nom_Article']} » supprimé du catalogue.")
-            refresh()
+            ctx.show_snack(f"🗑️ « {entry['Nom_Article']} » supprimé du catalogue.")
+            ctx.refresh()
 
         page.show_dialog(ft.AlertDialog(
             scrollable=True,
@@ -1421,7 +1317,7 @@ def main(page: ft.Page):
     admin_search.expand = True
     admin_catalogue.col = admin_category.col = 12
     admin_filter_details = ft.ResponsiveRow([admin_catalogue, admin_category], spacing=12, run_spacing=12)
-    admin_filter_details.visible = window["layout"].width >= 600 and not window["layout"].short
+    admin_filter_details.visible = ctx.window["layout"].width >= 600 and not ctx.window["layout"].short
 
     def toggle_admin_filters(e=None):
         admin_filter_details.visible = not admin_filter_details.visible
@@ -1460,30 +1356,30 @@ def main(page: ft.Page):
     def save_catalogue_changes(updated):
         # Enregistrer avant de modifier l'écran : une erreur disque ne doit pas effacer les données en mémoire.
         try:
-            save_prefs(updated)
+            storage.save_prefs(updated)
         except OSError as err:
-            show_snack(f"⚠️ Modification du catalogue impossible : {err}")
-            refresh()
+            ctx.show_snack(f"⚠️ Modification du catalogue impossible : {err}")
+            ctx.refresh()
             return False
-        prefs.clear()
-        prefs.update(updated)
-        rebuild_catalogue()
+        ctx.prefs.clear()
+        ctx.prefs.update(updated)
+        ctx.rebuild_catalogue()
         return True
 
     def refresh_catalogues():
         render_catalogue()
         render_catalogues()
         render_all()
-        refresh()
+        ctx.refresh()
 
     def rename_catalogue_dialog(name):
-        if name == DEFAULT_CATALOGUE or name not in managed_catalogues():
+        if name == DEFAULT_CATALOGUE or name not in ctx.managed_catalogues():
             return
         name_field = ui.field(label="Nom du catalogue", value=name, autofocus=True)
 
         def validate(e=None):
             new_name = norm_text(name_field.value or "")
-            reserved = {fold(n) for n in managed_catalogues() if n != name}
+            reserved = {fold(n) for n in ctx.managed_catalogues() if n != name}
             reserved.update({fold(DEFAULT_CATALOGUE_LABEL), fold("Catalogue principal")})
             if not new_name:
                 message = "Indiquez un nom de catalogue."
@@ -1495,21 +1391,21 @@ def main(page: ft.Page):
                 message = None
             if message:
                 name_field.error, name_field.error_max_lines = message, 3
-                refresh()
+                ctx.refresh()
                 return
             name_field.error = None
             if new_name != name:
                 snapshot = [{**item, "Catalogue": new_name if item["Catalogue"] == name else item["Catalogue"]}
-                            for item in prefs.get("catalogue_items", excel_items)]
+                            for item in ctx.prefs.get("catalogue_items", ctx.excel_items)]
                 custom = [{**item, "catalogue": new_name} if item.get("catalogue", DEFAULT_CATALOGUE) == name
-                          else dict(item) for item in prefs["custom"]]
-                hidden_catalogues = set(prefs["hidden_catalogues"])
+                          else dict(item) for item in ctx.prefs["custom"]]
+                hidden_catalogues = set(ctx.prefs["hidden_catalogues"])
                 was_hidden = name in hidden_catalogues
                 hidden_catalogues.discard(name)
                 hidden_catalogues.discard(new_name)
                 if was_hidden:
                     hidden_catalogues.add(new_name)
-                if not save_catalogue_changes({**prefs, "catalogue_items": snapshot, "custom": custom,
+                if not save_catalogue_changes({**ctx.prefs, "catalogue_items": snapshot, "custom": custom,
                                                "hidden_catalogues": hidden_catalogues}):
                     return
                 for dropdown in (catalogue_dropdown, admin_catalogue):
@@ -1522,7 +1418,7 @@ def main(page: ft.Page):
         page.show_dialog(ft.AlertDialog(
             scrollable=True,
             modal=True, title=ui.text("Renommer le catalogue"),
-            content=ft.Column([name_field], tight=True, width=dialog_width()),
+            content=ft.Column([name_field], tight=True, width=ctx.dialog_width()),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
                      ui.button(content="Renommer", on_click=validate)],
         ))
@@ -1532,17 +1428,17 @@ def main(page: ft.Page):
         label = name or DEFAULT_CATALOGUE_LABEL
 
         def confirm(e=None):
-            keys = {item["Cle"] for item in entries_in(name)}
-            snapshot = [dict(item) for item in prefs.get("catalogue_items", excel_items)
+            keys = {item["Cle"] for item in ctx.entries_in(name)}
+            snapshot = [dict(item) for item in ctx.prefs.get("catalogue_items", ctx.excel_items)
                         if item["Catalogue"] != name]
-            custom = [dict(item) for item in prefs["custom"]
+            custom = [dict(item) for item in ctx.prefs["custom"]
                       if item.get("catalogue", DEFAULT_CATALOGUE) != name]
-            hidden_catalogues = set(prefs["hidden_catalogues"])
+            hidden_catalogues = set(ctx.prefs["hidden_catalogues"])
             if not is_main:
                 hidden_catalogues.discard(name)
-            if not save_catalogue_changes({**prefs, "catalogue_items": snapshot, "custom": custom,
-                    "hidden_catalogues": hidden_catalogues, "hidden": prefs["hidden"] - keys,
-                    "prices": {key: value for key, value in prefs["prices"].items() if key not in keys}}):
+            if not save_catalogue_changes({**ctx.prefs, "catalogue_items": snapshot, "custom": custom,
+                    "hidden_catalogues": hidden_catalogues, "hidden": ctx.prefs["hidden"] - keys,
+                    "prices": {key: value for key, value in ctx.prefs["prices"].items() if key not in keys}}):
                 return
             page.pop_dialog()
             refresh_catalogues()
@@ -1551,7 +1447,7 @@ def main(page: ft.Page):
             scrollable=True,
             modal=True,
             title=ui.text("Vider le catalogue principal ?" if is_main else "Supprimer le catalogue ?"),
-            content=ui.text(f"Les {len(entries_in(name))} article(s) de « {label} » seront retirés, "
+            content=ui.text(f"Les {len(ctx.entries_in(name))} article(s) de « {label} » seront retirés, "
                             "y compris les articles ajoutés manuellement.\n"
                             "Les commandes existantes sont conservées. Un nouvel import peut rétablir ces articles."),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
@@ -1561,24 +1457,24 @@ def main(page: ft.Page):
 
     def set_catalogue_visible(name, visible):
         if visible:
-            prefs["hidden_catalogues"].discard(name)
+            ctx.prefs["hidden_catalogues"].discard(name)
         else:
-            prefs["hidden_catalogues"].add(name)
-        persist_prefs()
+            ctx.prefs["hidden_catalogues"].add(name)
+        ctx.persist_prefs()
         render_catalogue()
         render_catalogues()
         render_orders()
-        refresh()
+        ctx.refresh()
 
     def render_catalogues():
         catalogues_listview.controls.clear()
-        names = managed_catalogues()
-        n_visible = sum(name not in prefs["hidden_catalogues"] for name in names)
+        names = ctx.managed_catalogues()
+        n_visible = sum(name not in ctx.prefs["hidden_catalogues"] for name in names)
         catalogues_summary.value = f"{n_visible} catalogue(s) affiché(s) sur {len(names)}"
         for name in names:
             label = name or DEFAULT_CATALOGUE_LABEL
-            visible = name not in prefs["hidden_catalogues"]
-            count = len(entries_in(name))
+            visible = name not in ctx.prefs["hidden_catalogues"]
+            count = len(ctx.entries_in(name))
             actions = ([ft.PopupMenuItem(content="Vider le catalogue principal", icon=ft.Icons.DELETE_OUTLINE,
                                          disabled=count == 0, on_click=lambda e: remove_catalogue_dialog(DEFAULT_CATALOGUE))]
                        if name == DEFAULT_CATALOGUE else [
@@ -1640,15 +1536,15 @@ def main(page: ft.Page):
                 content=ui.text(f"{err}\n\nLe catalogue actuel est conservé.", selectable=True),
                 actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
             ))
-            refresh()
+            ctx.refresh()
             return
-        old_keys = {it["Cle"] for it in cat["all"] if not it["Perso"]}
-        prefs.pop("catalogue_items", None)  # le nouveau fichier remplace les modifications locales
+        old_keys = {it["Cle"] for it in ctx.cat["all"] if not it["Perso"]}
+        ctx.prefs.pop("catalogue_items", None)  # le nouveau fichier remplace les modifications locales
         # Nouveaux articles marqués « Masqué » : masqués comme au premier lancement
-        prefs["hidden"] |= {it["Cle"] for it in items if it["Masque"] and it["Cle"] not in old_keys}
-        excel_items[:] = items
-        rebuild_catalogue()
-        persist_prefs()
+        ctx.prefs["hidden"] |= {it["Cle"] for it in items if it["Masque"] and it["Cle"] not in old_keys}
+        ctx.excel_items[:] = items
+        ctx.rebuild_catalogue()
+        ctx.persist_prefs()
         render_catalogue()
         render_all()
         message = f"✅ Catalogue importé : {len(items)} article(s)."
@@ -1661,8 +1557,8 @@ def main(page: ft.Page):
                 actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
             ))
         else:
-            show_snack(message)
-        refresh()
+            ctx.show_snack(message)
+        ctx.refresh()
 
     photos_tab = ft.NavigationBarDestination(label="Photos", icon=ft.Icons.PHOTO_LIBRARY_OUTLINED,
                                              selected_icon=ft.Icons.PHOTO_LIBRARY)
@@ -1677,7 +1573,7 @@ def main(page: ft.Page):
     )])
 
     def order_photos(order=None):
-        return (order or current_order()).setdefault("photos", [])
+        return (order or ctx.current_order()).setdefault("photos", [])
 
     def add_photo_file(order_id, source_path=None, data=None, ext=".jpg"):
         """Range une photo (copie d'un fichier, ou octets de l'appareil photo) dans la commande."""
@@ -1689,14 +1585,14 @@ def main(page: ft.Page):
             (folder / filename).write_bytes(data)
         else:
             shutil.copyfile(source_path, folder / filename)
-        photos = orders[order_id].setdefault("photos", [])
+        photos = ctx.orders[order_id].setdefault("photos", [])
         entry = {"id": photo_id, "file": filename, "label": f"Photo {len(photos) + 1}",
                  "added": datetime.now().isoformat(timespec="minutes")}
         photos.append(entry)
         return entry
 
     def delete_photo(order_id, photo_id):
-        photos = orders[order_id].get("photos", [])
+        photos = ctx.orders[order_id].get("photos", [])
         photo = next((p for p in photos if p["id"] == photo_id), None)
         if photo is None:
             return None
@@ -1718,7 +1614,7 @@ def main(page: ft.Page):
         return str(path)
 
     def render_photos():
-        order_id = state["current"]
+        order_id = ctx.state["current"]
         photos = order_photos()
         photos_grid.controls.clear()
         for i, photo in enumerate(photos, 1):
@@ -1735,7 +1631,7 @@ def main(page: ft.Page):
                             src=photo_src(order_id, photo),
                             fit=ft.BoxFit.COVER,
                             expand=True,
-                            cache_width=dialog_width(),  # vignette : évite de décoder l'image en pleine taille
+                            cache_width=ctx.dialog_width(),  # vignette : évite de décoder l'image en pleine taille
                             border_radius=8,
                             error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
                         ),
@@ -1769,21 +1665,21 @@ def main(page: ft.Page):
             label = norm_text(label_field.value or "")
             if label and label != photo["label"]:
                 photo["label"] = label
-                persist()
+                ctx.persist()
             render_all()
             if on_done:
                 on_done()
-            refresh()
+            ctx.refresh()
 
         def remove(e):
             page.pop_dialog()
             if delete_photo(order_id, photo["id"]):
-                persist()
+                ctx.persist()
                 render_all()
-                show_snack("🗑️ Photo supprimée.")
+                ctx.show_snack("🗑️ Photo supprimée.")
             if on_done:
                 on_done()
-            refresh()
+            ctx.refresh()
 
         label_field.on_submit = save
         added = datetime.fromisoformat(photo["added"]).strftime("%d/%m/%Y à %H:%M")
@@ -1798,7 +1694,7 @@ def main(page: ft.Page):
                     label_field,
                     ui.text(f"Prise le {added}", size=11, color=ft.Colors.ON_SURFACE_VARIANT),
                 ],
-                tight=True, spacing=10, width=dialog_width(),
+                tight=True, spacing=10, width=ctx.dialog_width(),
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
             actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -1810,16 +1706,16 @@ def main(page: ft.Page):
         ))
 
     def open_photo_dialog(photo_id):
-        order_id = state["current"]
+        order_id = ctx.state["current"]
         photo = next((p for p in order_photos() if p["id"] == photo_id), None)
         if photo is None:
             return
         ask_photo_label(order_id, photo, "Photo", modal=False)
-        refresh()
+        ctx.refresh()
 
     async def import_photos(e=None):
         """Galerie du téléphone, ou fichiers sur PC (plusieurs à la fois)."""
-        order_id = state["current"]
+        order_id = ctx.state["current"]
         if order_id is None:
             return
         try:
@@ -1830,8 +1726,8 @@ def main(page: ft.Page):
                 with_data=page.web,
             )
         except Exception as err:  # sélecteur indisponible
-            show_snack(f"Impossible d'ouvrir la galerie : {err}")
-            refresh()
+            ctx.show_snack(f"Impossible d'ouvrir la galerie : {err}")
+            ctx.refresh()
             return
         if not files:
             return  # annulé
@@ -1847,18 +1743,18 @@ def main(page: ft.Page):
                 added += 1
             except OSError:
                 failed += 1
-        persist()
+        ctx.persist()
         render_all()
         go_to_tab(2)
         message = f"📷 {added} photo(s) ajoutée(s) — touchez une photo pour la nommer."
         if failed:
             message += f" {failed} n'ont pas pu être copiée(s)."
-        show_snack(message)
-        refresh()
+        ctx.show_snack(message)
+        ctx.refresh()
 
     async def share_photos(e=None):
         """Feuille de partage du téléphone (mail, WhatsApp, Drive…) : photos nommées + liste."""
-        order_id, order = state["current"], current_order()
+        order_id, order = ctx.state["current"], ctx.current_order()
         if not order.get("photos"):
             return
         names = photo_export_names(order)
@@ -1878,12 +1774,12 @@ def main(page: ft.Page):
                 text="\n".join(photos_summary(order, names)),
             )
         except Exception as err:
-            show_snack(f"Partage impossible : {err}")
-            refresh()
+            ctx.show_snack(f"Partage impossible : {err}")
+            ctx.refresh()
 
     async def save_photos_zip(e=None):
         """Un fichier .zip : photos nommées par leur libellé + photos.txt (liste et articles)."""
-        order_id, order = state["current"], current_order()
+        order_id, order = ctx.state["current"], ctx.current_order()
         if not order.get("photos"):
             return
         data = build_photos_zip(order_id, order)
@@ -1897,8 +1793,8 @@ def main(page: ft.Page):
                 src_bytes=data,
             )
         except Exception as err:
-            show_snack(f"Enregistrement impossible : {err}")
-            refresh()
+            ctx.show_snack(f"Enregistrement impossible : {err}")
+            ctx.refresh()
             return
         if not chosen:
             return  # annulé
@@ -1910,18 +1806,18 @@ def main(page: ft.Page):
             try:
                 target.write_bytes(data)
             except OSError as err:
-                show_snack(f"Enregistrement impossible : {err}")
-                refresh()
+                ctx.show_snack(f"Enregistrement impossible : {err}")
+                ctx.refresh()
                 return
             chosen = str(target)
-        show_snack(f"💾 Photos enregistrées : {Path(chosen).name}")
-        refresh()
+        ctx.show_snack(f"💾 Photos enregistrées : {Path(chosen).name}")
+        ctx.refresh()
 
     # --- Appareil photo intégré (Android) ---
     camera_count = ui.text("", color=ft.Colors.WHITE, size=13, width=90)
 
     def update_camera_count():
-        n = len(order_photos()) if state["current"] else 0
+        n = len(order_photos()) if ctx.state["current"] else 0
         camera_count.value = f"{n} photo(s)" if n else ""
 
     def build_camera_view():
@@ -1933,7 +1829,7 @@ def main(page: ft.Page):
             bgcolor=ft.Colors.BLACK,
             padding=0,
             appbar=ft.AppBar(
-                title=ui.text(current_order()["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                title=ui.text(ctx.current_order()["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 bgcolor=ft.Colors.BLACK,
                 color=ft.Colors.WHITE,
                 actions=[ft.TextButton(content="Terminé", on_click=close_camera,
@@ -1963,10 +1859,10 @@ def main(page: ft.Page):
         )
 
     async def open_camera(e=None):
-        if not camera_available or state["current"] is None:
+        if not camera_available or ctx.state["current"] is None:
             await import_photos()
             return
-        state["back_to_photos"] = True
+        ctx.state["back_to_photos"] = True
         await page.push_route("/photo")  # la caméra démarre dans route_change, une fois l'écran affiché
 
     async def start_camera():
@@ -1981,25 +1877,25 @@ def main(page: ft.Page):
         except Exception as err:
             camera_state["cam"] = None
             await page.push_route("/")
-            show_snack(f"Appareil photo indisponible ({err}). Utilisez « Importer ».")
-            refresh()
+            ctx.show_snack(f"Appareil photo indisponible ({err}). Utilisez « Importer ».")
+            ctx.refresh()
 
     async def take_photo(e=None):
-        cam, order_id = camera_state["cam"], state["current"]
+        cam, order_id = camera_state["cam"], ctx.state["current"]
         if cam is None or order_id is None:
             return
         try:
             data = await cam.take_picture()
         except Exception as err:
-            show_snack(f"Photo impossible : {err}")
-            refresh()
+            ctx.show_snack(f"Photo impossible : {err}")
+            ctx.refresh()
             return
         photo = add_photo_file(order_id, data=data, ext=".jpg")
-        persist()
+        ctx.persist()
         update_camera_count()
         # On nomme la photo tout de suite, puis on reste dans l'appareil photo pour la suivante
         ask_photo_label(order_id, photo, "Nommer la photo", on_done=update_camera_count)
-        refresh()
+        ctx.refresh()
 
     async def close_camera(e=None):
         await page.push_route("/")
@@ -2019,7 +1915,7 @@ def main(page: ft.Page):
         export_backup_btn.disabled = restore_backup_btn.disabled = recovery_backup_btn.disabled = True
         backup_progress.visible = True
         backup_status.value = "Préparation de la sauvegarde…"
-        refresh()
+        ctx.refresh()
         try:
             if recovery:
                 path = max((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"),
@@ -2028,8 +1924,8 @@ def main(page: ft.Page):
                     raise ValueError("La copie de secours est située hors du stockage de l'application.")
                 data = await asyncio.to_thread(path.read_bytes)
             else:
-                save_orders(orders, state["current"])
-                save_prefs(prefs)
+                storage.save_orders(ctx.orders, ctx.state["current"])
+                storage.save_prefs(ctx.prefs)
                 data = await asyncio.to_thread(backup.create_backup, storage_dir())
             chosen = await file_picker.save_file(dialog_title="Enregistrer la sauvegarde complète",
                 file_name=path.name if recovery else f"Prise de Commande - {datetime.now():%Y-%m-%d-%H%M}.zip",
@@ -2046,7 +1942,7 @@ def main(page: ft.Page):
             export_backup_btn.disabled = restore_backup_btn.disabled = False
             recovery_backup_btn.disabled = not any((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"))
             backup_progress.visible = False
-            refresh()
+            ctx.refresh()
 
     async def restore_from_view(e=None):
         async def done():
@@ -2101,9 +1997,9 @@ def main(page: ft.Page):
                 render_catalogues()
                 page.views.append(catalogues_view)
         elif page.route == "/photo":
-            if len(page.views) == 1 and camera_available and state["current"] is not None:
+            if len(page.views) == 1 and camera_available and ctx.state["current"] is not None:
                 page.views.append(build_camera_view())
-                refresh()
+                ctx.refresh()
                 await start_camera()
                 return
         else:
@@ -2113,9 +2009,9 @@ def main(page: ft.Page):
             camera_state["cam"] = None
             render_catalogue()
             render_all()
-            if state.pop("back_to_photos", False) and state["current"] is not None:
+            if ctx.state.pop("back_to_photos", False) and ctx.state["current"] is not None:
                 go_to_tab(2)  # retour de l'appareil photo : on montre les photos
-        refresh()
+        ctx.refresh()
 
     async def view_pop(e):
         # Flèche ← de la barre du haut, ou bouton « retour » d'Android
@@ -2125,10 +2021,10 @@ def main(page: ft.Page):
     page.on_view_pop = view_pop
 
     # --- ADAPTIVE WORKSPACE: keep controls alive while changing their parents ---
-    state["filters_open"] = False
+    ctx.state["filters_open"] = False
 
     def toggle_filters(e=None):
-        state["filters_open"] = not state["filters_open"]
+        ctx.state["filters_open"] = not ctx.state["filters_open"]
         apply_filter_layout()
 
     filter_button = ft.IconButton(
@@ -2231,7 +2127,7 @@ def main(page: ft.Page):
         padding=ft.Padding.only(left=12, right=12, bottom=8), visible=False)
 
     async def restore_current_order(e=None):
-        await archive_order(state["current"])
+        await archive_order(ctx.state["current"])
 
     archive_banner = ft.Container(content=ft.Row([
         ui.text("Commande archivée", expand=True),
@@ -2240,25 +2136,25 @@ def main(page: ft.Page):
     workspace = ft.Column([archive_banner, pane_area, quick_cart, navigation], spacing=0, expand=True)
 
     def apply_filter_layout():
-        layout = window["layout"]
+        layout = ctx.window["layout"]
         narrow = layout.width < 600 or layout.dual_pane
-        filter_details.visible = state["filters_open"] if narrow or layout.short else True
+        filter_details.visible = ctx.state["filters_open"] if narrow or layout.short else True
         filter_button.visible = narrow or layout.short
-        browse_row.visible = not layout.short or state["filters_open"]
+        browse_row.visible = not layout.short or ctx.state["filters_open"]
         catalogue_info.visible = not layout.short
-        filter_button.bgcolor = ft.Colors.PRIMARY_CONTAINER if state["filters_open"] else None
+        filter_button.bgcolor = ft.Colors.PRIMARY_CONTAINER if ctx.state["filters_open"] else None
         catalogue_dropdown.col = category_dropdown.col = 12 if narrow else 6
         for heading in [catalogue_heading, basket_heading, photo_heading]:
             heading.visible = not layout.short
 
     def apply_catalogue_columns():
-        layout = window["layout"]
+        layout = ctx.window["layout"]
         available = min(1440 if layout.dual_pane else 780, layout.width - 2 * layout.margin)
         pane_width = ((available - 24) * (0.5 if layout.width < 1200 else 6 / 11)
                       if layout.dual_pane else available)
         # Flet ResponsiveRow breakpoints use the view width, so use explicit
         # spans based on this pane's width for master/detail catalogue cards.
-        for grid in catalogue_grids:
+        for grid in ctx.catalogue_grids:
             columns = 2 if pane_width >= 680 else 1
             for i, card in enumerate(grid.controls):
                 # Give an odd final article the full row instead of leaving
@@ -2266,11 +2162,11 @@ def main(page: ft.Page):
                 full_width = columns == 1 or (len(grid.controls) % 2 and i == len(grid.controls) - 1)
                 card.col = 12 if full_width else 6
                 card_width = pane_width if full_width else (pane_width - 8) / 2
-                compact, wide = catalogue_rows[id(card)]
+                compact, wide = ctx.catalogue_rows[id(card)]
                 card.content = wide if card_width >= 380 else compact
 
     def layout_workspace():
-        layout = window["layout"]
+        layout = ctx.window["layout"]
         apply_filter_layout()
         apply_catalogue_columns()
         # In a short landscape/keyboard window, let the summary scroll with
@@ -2285,51 +2181,51 @@ def main(page: ft.Page):
                 cart_listview.controls.remove(basket_footer)
             if basket_footer not in content_panier.controls:
                 content_panier.controls.append(basket_footer)
-        index = state["tab"]
+        index = ctx.state["tab"]
         dual = layout.dual_pane
         # Reparent only at a layout/navigation boundary, never on every resize pixel.
         signature = (dual, index)
-        if state.get("layout_signature") != signature:
+        if ctx.state.get("layout_signature") != signature:
             main_host.content = None
             detail_host.content = None
             main_host.content = content_photos if index == 2 else content_catalogue if dual or index == 0 else content_panier
             if dual:
                 detail_host.content = content_panier
             detail_host.visible = dual
-            state["layout_signature"] = signature
+            ctx.state["layout_signature"] = signature
         pane_area.padding = layout.margin
         pane_frame.width = min(1440 if dual else 780, max(0, layout.width - 2 * layout.margin))
         drawer.width = min(360, max(240, layout.width - 24))
         # Limit line lengths on large desktops; balanced panes on inner displays.
         main_host.expand = (1 if layout.width < 1200 else 6) if dual else True
         detail_host.expand = 1 if layout.width < 1200 else 5
-        navigation.visible = not (layout.short and state.get("keyboard_open", False))
-        quick_cart.visible = bool(state["current"] and order_count(current_order()) and not dual
-                                  and not layout.short and state["tab"] == 0)
+        navigation.visible = not (layout.short and ctx.state.get("keyboard_open", False))
+        quick_cart.visible = bool(ctx.state["current"] and order_count(ctx.current_order()) and not dual
+                                  and not layout.short and ctx.state["tab"] == 0)
 
     async def on_workspace_size(e):
-        window["layout"] = ui.WindowLayout(e.width, e.height)
+        ctx.window["layout"] = ui.WindowLayout(e.width, e.height)
         layout_workspace()
-        refresh()
+        ctx.refresh()
 
     async def on_window_resize(e=None):
         # SafeArea's measured workspace is the source of truth. This fallback
         # updates immediately when the host reports a new window size.
-        window["layout"] = ui.WindowLayout(
-            getattr(page, "width", None) or window["layout"].width,
-            max(0, (getattr(page, "height", None) or window["layout"].height) - 64),
+        ctx.window["layout"] = ui.WindowLayout(
+            getattr(page, "width", None) or ctx.window["layout"].width,
+            max(0, (getattr(page, "height", None) or ctx.window["layout"].height) - 64),
         )
         layout_workspace()
         apply_admin_density()
-        admin_narrow = window["layout"].width < 600
+        admin_narrow = ctx.window["layout"].width < 600
         admin_catalogue.col = admin_category.col = 12 if admin_narrow else 6
-        refresh()
+        ctx.refresh()
 
     async def on_media_change(e=None):
         media = getattr(page, "media", None)
-        state["keyboard_open"] = bool(media and (media.view_insets.bottom or 0) > 0)
+        ctx.state["keyboard_open"] = bool(media and (media.view_insets.bottom or 0) > 0)
         layout_workspace()
-        refresh()
+        ctx.refresh()
 
     page.on_resize = on_window_resize
     page.on_media_change = on_media_change
@@ -2370,18 +2266,18 @@ def main(page: ft.Page):
     render_all()
 
     # Sauvegardes de démarrage : seulement si quelque chose a été converti ou créé
-    if migrated:
-        persist()
+    if ctx.migrated:
+        ctx.persist()
     if not prefs_path().exists():
-        persist_prefs()  # garde les réglages par défaut (articles masqués par défaut)
-    refresh()  # page.add() a déjà rafraîchi l'écran : on envoie le catalogue et le menu remplis ensuite
+        ctx.persist_prefs()  # garde les réglages par défaut (articles masqués par défaut)
+    ctx.refresh()  # page.add() a déjà rafraîchi l'écran : on envoie le catalogue et le menu remplis ensuite
 
-    if startup_warnings:
+    if ctx.startup_warnings:
         page.show_dialog(ft.AlertDialog(
             scrollable=True,
             modal=True,
             title=ui.text("Attention"),
-            content=ui.text("\n\n".join(startup_warnings)),
+            content=ui.text("\n\n".join(ctx.startup_warnings)),
             actions=[ui.button(content="OK", on_click=lambda e: page.pop_dialog())],
         ))
 

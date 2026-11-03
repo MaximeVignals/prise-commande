@@ -24,3 +24,5 @@ Baseline: 86 tests OK (`python -m unittest discover -s tests`).
 ## Design notes
 
 - `import_screen.py` imports `main` lazily inside `start_app` and `done` (`from .main import main` / `from main import main`) because `main` imports `import_screen`; a top-level import would be a cycle.
+- `context.py` / `AppContext` (Task 6) holds the state `main()` used to share through closures (`orders`, `state`, `prefs`, `cat`, `excel_items`, …) and the core helpers (`persist`, `show_snack`, …). Nothing rebinds these: `excel_items` is only mutated in place (`ctx.excel_items[:] = items`), so no alias can go stale. `main()` sets `page.data = {"ctx": ctx}` (`page.data` was unused) so tests can reach the context.
+- Every save inside `main()` and `AppContext` goes through the module (`storage.save_orders(...)`), so tests patch `storage.save_orders` / `storage.save_prefs`, not `app.*`.
