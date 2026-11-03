@@ -48,7 +48,7 @@ Split in Task 13 (verbatim blocks moved into helpers, same call point and order)
 - `parse_catalogue` 70 -> 56 (`_find_columns`)
 
 Kept whole:
-- `install()` of every view module and of `shell` (205-405 lines): the old closure body; the widgets and handlers share locals by closure.
+- `install()` of every view module and of `shell` (78 to 405 lines: `view_backup` 78, `view_catalogues` 205, `view_cart` 225, `shell` 234, `view_catalogue` 325, `view_photos` 385, `view_orders` 387, `view_admin` 405, measured with an AST script): the old closure body; the widgets and handlers share locals by closure.
 - `render_catalogue` (106): what remains is the per-article card loop; its lambdas bind loop variables (`k=draft_key`, `item=current_item`, `q=qty_field`), so it stays inline.
 - `render_cart` (58): same reason, per-line loop with lambdas binding `id_art` / `qty_field`.
 - `drawer_header` (67): one list literal of fixed drawer entries.
@@ -88,16 +88,19 @@ src/
 Dependency direction (verified by grepping the imports):
 
 ```
-main -> shell, view_*, context, import_screen, catalogue
-shell, view_* -> context -> catalogue / storage / orders / photos / import_screen -> text / config
+main -> ui, shell, view_*, context, import_screen, catalogue
+shell, view_* -> context (+ orders, photos, storage, catalogue, import_screen, ui, as listed below)
+context -> catalogue, config, text
+import_screen -> catalogue, config, storage
 ui and backup are leaf helpers (ui imports text only; backup imports nothing from the app)
 ```
 
 Edges found beyond the plain downward chain (none creates a hard cycle):
 - `import_screen -> main`: lazy import inside `start_app` and `done` (upward edge, see Design notes). It is the only edge that breaks the direction.
 - `main` wires `shell` and every `view_*` directly; `shell` does not import the views.
-- `view_backup` and `view_catalogues` import helpers from `import_screen` (`request_restore`, `pick_catalogue_file`, `skipped_summary`); `import_screen` imports no view or context.
-- `view_*`, `shell` and `context` import some lower modules directly (`catalogue`, `config`, `storage`, `orders`, `photos`, `text`, `ui`, `backup`) instead of going through `context`; all of these point downward.
+- `view_backup` and `view_catalogues` import helpers from `import_screen` (`request_restore`, `pick_catalogue_file`, `skipped_summary`); `import_screen` imports no view and no `context`.
+- `context` imports only `catalogue`, `config` and `text`; it does not import `orders`, `photos` or `import_screen`.
+- `view_*` and `shell` import the lower modules they need directly next to `context`; all of these point downward. Per module: `shell` -> context, orders, storage; `view_cart` -> context, orders, text; `view_orders` -> context, orders, storage, text; `view_photos` -> context, photos, storage, text; `view_catalogue` and `view_admin` -> catalogue, config, context, text, ui; `view_catalogues` -> catalogue, config, context, import_screen, text; `view_backup` -> config, context, import_screen, storage.
 - Lower layers: `catalogue -> storage, config, text`; `orders -> storage, text`; `photos -> orders, storage, text`; `storage -> config, text`.
 - No `view_*` imports another `view_*`; cross-view calls go through `ctx.<name>`.
 
@@ -111,15 +114,15 @@ Edges found beyond the plain downward chain (none creates a hard cycle):
 
 ## Bugs / risks (not fixed)
 
-- `src/catalogue_importe.xlsx` and `src/catalogue_perso.json` exist in `src/`; they are git-ignored, but `flet build` packages `src/`, and `construire.ps1` only checks `src\assets`. Check before the next build.
+- Git-ignored data files (the real catalogue and its settings) present in `src/` would be packaged by `flet build`, and `construire.ps1` only checks `src\assets`. Check before the next build.
 - Web backup export shows "Enregistrement annulé." although the file does download. Pre-existing: confirmed byte-identical behaviour in the old code (3a444a0).
 - `CLAUDE.md` says version 1.2.0 / build 3; `pyproject.toml` is 1.5.0 / build 6.
-- `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
+- `scripts/preview_ui.py`: purpose unclear. A non-versioned `storage/` folder also exists in the main checkout (not in git); check it.
 - No pytest or linter installed; tests run with `python -m unittest discover -s tests`.
 - Seen once in the Task 12 web smoke (not reproduced after reload, not investigated against the pre-refactor build): after three quick add-to-cart clicks the cart showed a duplicate row for one article while the totals were right.
 - Restoring a backup adds its orders even when same-named orders already exist (by design, stated in the restore dialog), so restoring on the same storage twice duplicates the orders.
 - `backup.py` still spells `"commandes.json"`, `"catalogue_perso.json"` and `"sauvegardes/avant-restauration-…zip"` itself (it is a standalone module with no app imports). `config.py` holds the same values (`ORDERS_FILENAME`, `PREFS_FILENAME`, `BACKUPS_DIRNAME`, `RECOVERY_BACKUP_PATTERN`): change both together.
-- Leftovers: unused imports in `tests/test_productivity.py` (lines 20, 22, 24); `page.data["ctx"]` keeps the previous context after a relaunch into the import screen (tests only); `test_every_ctx_handler_is_callable_after_install` is a weak pin; the identity tests became existence checks once the re-exports went away.
+- Leftovers: `page.data["ctx"]` keeps the previous context after a relaunch into the import screen (tests only); `test_every_ctx_handler_is_callable_after_install` is a weak pin; the identity tests became existence checks once the re-exports went away.
 
 ## Design notes
 
@@ -130,6 +133,8 @@ Edges found beyond the plain downward chain (none creates a hard cycle):
 - Service registration order changed: `Share` is now created (in `view_photos`) before `FilePicker` (in `shell`). No behaviour effect.
 - Restore relaunch uses `ctx.main`; `reset_page` stays in `main.py`, so calling `main(page)` twice does not duplicate controls.
 - Splitting stopped at module level on purpose: the long `install()` closures were moved whole (see "Long functions").
+
+- `ctx.update_cart_summary` is exported by `view_cart` but only read by tests (`tests/test_modules.py`); kept on purpose.
 
 ## Check manually
 

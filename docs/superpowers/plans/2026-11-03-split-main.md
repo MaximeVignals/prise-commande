@@ -15,7 +15,7 @@
 - Zero functional change. Bugs found → `REFACTOR_NOTES.md`, never fixed.
 - No new dependencies. No change to `pyproject.toml`, `scripts/`, `.githooks/`, file names/paths the app reads or writes, JSON formats.
 - Do not touch `[tool.flet] org` / `product`. No builds in this plan except the final check, run through the `flet-release` skill **without** bumping the version.
-- Never open, print or summarise `prive\`, `src\catalogue_importe.xlsx`, `src\catalogue_perso.json` or any real orders. Test only with the sample catalogue.
+- Never open, print or summarise the real catalogue, prices and orders (private, git-ignored). Test only with the sample catalogue.
 - Imports: every new module uses the existing dual pattern so `flet run` (script mode, `src` on `sys.path`) and the tests (`from src import main`, package mode) both work:
   ```python
   if __package__:
@@ -83,9 +83,9 @@
 - [ ] **Step 2:** Move `docs/superpowers/plans/2026-11-03-split-main.md` into the worktree.
 - [ ] **Step 3:** Run the checks. Expected: 86 tests OK, `flet run --web` starts.
 - [ ] **Step 4:** Create `REFACTOR_NOTES.md` with the "before" table (real line counts: `main.py` 3163, `backup.py` 295, `ui.py` 208, tests 1113) and a "Bugs / risks (not fixed)" section seeded with:
-  - `src/catalogue_importe.xlsx` and `src/catalogue_perso.json` exist in `src/`; git-ignored, but `flet build` packages `src/`, and `construire.ps1` only checks `src\assets`. Check before the next build.
+  - git-ignored data files (the real catalogue and its settings) present in `src/` would be packaged, since `flet build` packages `src/`, and `construire.ps1` only checks `src\assets`. Check before the next build.
   - `CLAUDE.md` says 1.2.0 / build 3; `pyproject.toml` is 1.5.0 / build 6.
-  - `storage/tests/catalogue_preview.py` and `scripts/preview_ui.py`: purpose unclear.
+  - `scripts/preview_ui.py`: purpose unclear. A non-versioned `storage/` folder also exists in the main checkout (not in git); check it.
   - No pytest/linter installed; tests run with `python -m unittest discover -s tests`.
 - [ ] **Step 5:** Commit `docs: add refactor plan and notes`.
 
