@@ -28,6 +28,21 @@ class ModuleSplitTest(unittest.TestCase):
             os.environ.pop("FLET_ASSETS_DIR", None)
             self.assertEqual(storage.assets_dir(), Path(app.__file__).parent / "assets")
 
+    def test_catalogue_moved(self):
+        from src import main as app, catalogue, config, storage
+        for name in ["CatalogueError", "catalogue_path", "sample_catalogue_path", "split_catalogue_category",
+                     "_read_rows", "parse_catalogue", "load_catalogue", "install_catalogue", "build_catalogue",
+                     "categories_of", "catalogues_of"]:
+            self.assertIs(getattr(app, name), getattr(catalogue, name))
+        data = (storage.assets_dir() / config.SAMPLE_CATALOGUE_FILENAME).read_bytes()
+        result = catalogue.parse_catalogue(data, ".xlsx")
+        items, skipped = result
+        self.assertTrue(items)
+        self.assertIsInstance(skipped, list)
+        for item in items:
+            for key in ["Cle", "Nom_Article", "Catalogue", "Categorie", "Prix_Excel", "Masque"]:
+                self.assertIn(key, item)
+
 
 if __name__ == "__main__":
     unittest.main()
