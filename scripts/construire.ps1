@@ -50,6 +50,8 @@ Write-Host 'La construction prend plusieurs minutes.'
 $Releases = Join-Path $Racine 'releases'
 New-Item -ItemType Directory -Force $Releases | Out-Null
 Push-Location $Depot
+$AncienEncodagePython = $env:PYTHONIOENCODING
+$env:PYTHONIOENCODING = 'utf-8'  # les messages Flet contiennent des caractères Unicode
 try {
     if ($Cible -in 'tous', 'apk') {
         $pass = (Get-Content $mdp -TotalCount 1).Trim()
@@ -81,6 +83,11 @@ finally {
     'FLET_ANDROID_SIGNING_KEY_STORE', 'FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD',
     'FLET_ANDROID_SIGNING_KEY_PASSWORD', 'FLET_ANDROID_SIGNING_KEY_ALIAS' |
         ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }
+    if ($null -eq $AncienEncodagePython) {
+        Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONIOENCODING = $AncienEncodagePython
+    }
     Pop-Location
 }
 if ($echec) { exit 1 }
