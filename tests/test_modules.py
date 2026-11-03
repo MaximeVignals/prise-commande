@@ -79,6 +79,8 @@ EXPECTED_CTX_FUNCTIONS = [
     "apply_admin_density", "render_admin",
     # Task 10 : écran des catalogues (view_catalogues)
     "render_catalogues",
+    # Task 11 : écran photos (view_photos)
+    "render_photos", "build_camera_view", "start_camera",
 ]
 
 # Widgets partagés (vérifiés avec assertIsNotNone).
@@ -89,6 +91,7 @@ EXPECTED_CTX_WIDGETS = [
     "browse_row", "filter_button", "filter_details",
     "drawer", "appbar_title",
     "admin_catalogue", "admin_category", "admin_view", "catalogues_view", "file_picker",
+    "photos_tab", "content_photos", "photo_heading", "is_mobile", "camera_available", "camera_state",
 ]
 
 

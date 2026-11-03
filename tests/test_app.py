@@ -13,6 +13,7 @@ from openpyxl import Workbook
 
 from src import main as app
 from src import storage
+from src import view_photos
 
 
 class StorageTest(unittest.TestCase):
@@ -807,7 +808,7 @@ class WebPhotoTests(StorageTest):
 
     def test_mobile_browser_uses_photo_import(self):
         page = TestPage(platform=ft.PagePlatform.ANDROID)
-        with patch.object(app, "fc", SimpleNamespace()):
+        with patch.object(view_photos, "fc", SimpleNamespace()):
             app.main(page)
         page.select_tab(2)
         self.assertFalse(page.find(ft.Button, content="Prendre une photo").visible)
