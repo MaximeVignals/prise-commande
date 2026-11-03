@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import copy
 import io
 import json
 import math
@@ -14,6 +15,12 @@ from pathlib import Path
 
 import flet as ft
 from openpyxl import load_workbook
+
+if __package__:
+    from . import ui, backup
+else:
+    import ui
+    import backup
 
 try:
     # Appareil photo intégré (Android) : extension officielle flet-camera.
@@ -40,6 +47,7 @@ KEY_CATALOGUE = "CAT:"
 KEY_PERSO = "PERSO:"
 DEFAULT_CATALOGUE = ""
 DEFAULT_CATALOGUE_LABEL = "Catalogue principal (sans préfixe)"
+ALL_CATALOGUES = "__all_catalogues__"
 
 # --- FONCTIONS DE NETTOYAGE ET UTILITAIRES ---
 
@@ -51,18 +59,21 @@ def assets_dir():
 
 
 def get_category_icon(category_name):
-    cat_lower = str(category_name).lower()
-    if any(word in cat_lower for word in ["écran", "ecran", "moniteur"]): return "🖥️"
-    if any(word in cat_lower for word in ["unité", "pc", "ordinateur", "portable"]): return "💻"
-    if any(word in cat_lower for word in ["serveur", "baie", "nas"]): return "🗄️"
-    if "clavier" in cat_lower or "souris" in cat_lower: return "⌨️"
-    if any(word in cat_lower for word in ["imprimante", "scanner", "copieur"]): return "🖨️"
-    if any(word in cat_lower for word in ["réseau", "onduleur", "switch"]): return "🔌"
-    if any(word in cat_lower for word in ["tablette", "smartphone"]): return "📱"
-    if any(word in cat_lower for word in ["radio", "imagerie", "capteur"]): return "📷"
-    if any(word in cat_lower for word in ["3d", "résine"]): return "🧊"
-    if any(word in cat_lower for word in ["papeterie", "chèques"]): return "📄"
-    return "📦"
+    cat_lower = fold(category_name)
+    for words, icon in [
+        (["ecran", "moniteur"], ft.Icons.MONITOR),
+        (["unite", "pc", "ordinateur", "portable"], ft.Icons.LAPTOP_OUTLINED),
+        (["serveur", "baie", "nas"], ft.Icons.DNS_OUTLINED),
+        (["clavier", "souris"], ft.Icons.KEYBOARD_OUTLINED),
+        (["imprimante", "scanner", "copieur"], ft.Icons.PRINT_OUTLINED),
+        (["reseau", "onduleur", "switch"], ft.Icons.CABLE),
+        (["tablette", "smartphone"], ft.Icons.TABLET_ANDROID),
+        (["radio", "imagerie", "capteur", "camera"], ft.Icons.PHOTO_CAMERA_OUTLINED),
+        (["papeterie", "cheques"], ft.Icons.DESCRIPTION_OUTLINED),
+    ]:
+        if any(word in cat_lower for word in words):
+            return icon
+    return ft.Icons.INVENTORY_2_OUTLINED
 
 
 def _is_empty(value):
@@ -322,10 +333,14 @@ def photos_summary(order, names):
     for photo, name in zip(order.get("photos", []), names):
         added = datetime.fromisoformat(photo["added"]).strftime("%d/%m/%Y %H:%M")
         lines.append(f"- {name} : {photo['label']} (prise le {added})")
+    if order.get("notes"):
+        lines += ["", f"Remarques : {order['notes']}"]
     if order["items"]:
         lines += ["", "Articles de la commande :"]
         for item in order["items"].values():
             lines.append(f"- {item['quantite']}x {item['Nom']} ({fmt_eur(item['Prix'])}/u)")
+            if item.get("note"):
+                lines.append(f"  Remarque : {item['note']}")
         lines.append(f"TOTAL : {fmt_eur(order_total(order))}")
     return lines
 
@@ -406,6 +421,8 @@ def load_orders():
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
             if clean["quantite"] > 0 and math.isfinite(clean["Prix"]) and clean["Prix"] >= 0:
+                if isinstance(line.get("note"), str) and line["note"].strip():
+                    clean["note"] = line["note"].strip()
                 items[str(key)] = clean
         photos = []
         for photo in order.get("photos") if isinstance(order.get("photos"), list) else []:
@@ -423,6 +440,10 @@ def load_orders():
             "items": items,
             "photos": photos,
         }
+        if isinstance(order.get("notes"), str) and order["notes"].strip():
+            orders[str(order_id)]["notes"] = order["notes"].strip()
+        if order.get("archived") is True:
+            orders[str(order_id)]["archived"] = True
     return orders, data.get("current"), None
 
 
@@ -444,7 +465,7 @@ def migrate_cart_keys(orders):
             new_key = key if key.startswith((KEY_EXCEL, KEY_CATALOGUE, KEY_PERSO)) else KEY_EXCEL + line["Nom"]
             if new_key in new_items:
                 existing = new_items[new_key]
-                if abs(existing["Prix"] - line["Prix"]) < 0.005:
+                if abs(existing["Prix"] - line["Prix"]) < 0.005 and existing.get("note") == line.get("note"):
                     existing["quantite"] += line["quantite"]
                     continue
                 n = 2
@@ -467,7 +488,8 @@ def load_prefs(excel_items):
     if data is None:
         # Premier lancement : articles marqués « Masqué » dans le catalogue masqués par défaut
         hidden = {it["Cle"] for it in excel_items if it.get("Masque")}
-        return {"hidden": hidden, "hidden_catalogues": set(), "prices": {}, "custom": []}, warning
+        return {"hidden": hidden, "hidden_catalogues": set(), "prices": {}, "custom": [],
+                "favorites": set(), "recent": []}, warning
 
     hidden = {str(k) for k in data.get("hidden", [])} if isinstance(data.get("hidden"), list) else set()
     hidden_catalogues = ({name for name in data["hidden_catalogues"] if isinstance(name, str)}
@@ -491,7 +513,11 @@ def load_prefs(excel_items):
                 and math.isfinite(article["price"]) and article["price"] >= 0):
             custom.append(article)
     prefs = {"hidden": hidden, "hidden_catalogues": hidden_catalogues,
-             "prices": prices, "custom": custom}
+             "prices": prices, "custom": custom,
+             "favorites": {k for k in data.get("favorites", []) if isinstance(k, str)}
+                          if isinstance(data.get("favorites"), list) else set(),
+             "recent": list(dict.fromkeys(k for k in data.get("recent", []) if isinstance(k, str)))[:20]
+                       if isinstance(data.get("recent"), list) else []}
     # Copie locale après renommage / suppression. Une liste vide est un catalogue vidé.
     snapshot = data.get("catalogue_items")
     if isinstance(snapshot, list):
@@ -521,6 +547,8 @@ def save_prefs(prefs):
         "hidden_catalogues": sorted(prefs.get("hidden_catalogues", set())),
         "prices": prefs["prices"],
         "custom": prefs["custom"],
+        "favorites": sorted(prefs.get("favorites", set())),
+        "recent": prefs.get("recent", [])[:20],
         **({"catalogue_items": prefs["catalogue_items"]} if "catalogue_items" in prefs else {}),
     })
 
@@ -576,6 +604,44 @@ def order_count(order):
     return sum(v["quantite"] for v in order["items"].values())
 
 
+def order_email_text(order):
+    text = f"Bonjour,\n\nVoici le détail de la commande « {order['name']} » :\n\n"
+    if order.get("notes"):
+        text += f"Remarques : {order['notes']}\n\n"
+    for item in order["items"].values():
+        text += f"- {item['quantite']}x {item['Nom']} ({fmt_eur(item['Prix'])}/u) = {fmt_eur(item['Prix'] * item['quantite'])}\n"
+        if item.get("note"):
+            text += f"  Remarque : {item['note']}\n"
+    return text + f"\nTOTAL : {fmt_eur(order_total(order))}\n\nMerci."
+
+
+def duplicate_order(order_id, order, name=None, existing_ids=()):
+    """Independent draft, including independent photo files and labels."""
+    new_id = uuid.uuid4().hex[:8]
+    while new_id in existing_ids or photos_dir(new_id).exists():
+        new_id = uuid.uuid4().hex[:8]
+    duplicate = copy.deepcopy(order)
+    duplicate.update(name=(name or "").strip() or f"{order['name']} — copie",
+                     created=datetime.now().isoformat(timespec="minutes"), photos=[])
+    duplicate.pop("archived", None)
+    target = photos_dir(new_id)
+    try:
+        for photo in order.get("photos", []):
+            photo_id = uuid.uuid4().hex[:8]
+            filename = photo_id + Path(photo["file"]).suffix
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(photo_path(order_id, photo), target / filename)
+            duplicate["photos"].append({**photo, "id": photo_id, "file": filename})
+    except OSError:
+        # Only files just created for this new, generated ID are removed.
+        for path in target.glob("*"):
+            path.unlink()
+        if target.exists():
+            target.rmdir()
+        raise
+    return new_id, duplicate
+
+
 # --- IMPORT DU CATALOGUE ---
 
 
@@ -608,18 +674,82 @@ def skipped_summary(skipped):
     return f"{len(skipped)} ligne(s) ignorée(s) :\n{lines}{more}"
 
 
+async def request_restore(page, picker, on_done):
+    """Shared restore flow, also available before a catalogue is installed."""
+    def report(message):
+        page.show_dialog(ft.SnackBar(ui.text(message, color=ft.Colors.ON_INVERSE_SURFACE)))
+        page.update()
+
+    try:
+        files = await picker.pick_files(dialog_title="Restaurer une sauvegarde",
+            file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["zip"], with_data=True)
+        if not files:
+            return
+        file = files[0]
+        data = file.bytes if file.bytes is not None else Path(file.path).read_bytes()
+        snapshot = await asyncio.to_thread(backup.inspect_backup, data, parse_catalogue)
+    except Exception as err:
+        report(f"Restauration impossible : {err}")
+        return
+
+    async def confirm(e=None):
+        restore_button.disabled = True
+        restore_button.content = "Restauration…"
+        restore_error.visible = False
+        page.update()
+        try:
+            recovery = await asyncio.to_thread(backup.restore_backup, storage_dir(), snapshot)
+        except (OSError, ValueError) as err:
+            restore_button.disabled = False
+            restore_button.content = "Restaurer"
+            restore_error.value, restore_error.visible = str(err), True
+            page.update()
+            return
+        page.pop_dialog()
+        # Flet dismisses the native route asynchronously. Navigating/rebuilding
+        # the app before that route has closed can leave its modal visible.
+        try:
+            await asyncio.wait_for(dismissed.wait(), timeout=1)
+        except TimeoutError:
+            pass  # Older clients may not acknowledge dismissal; allow it time to finish.
+        await on_done()
+        report(f"Restauration terminée. Copie de secours : {recovery.name}")
+
+    restore_button = ui.button(content="Restaurer", on_click=confirm)
+    restore_error = ui.text("", color=ft.Colors.ERROR, visible=False)
+    dismissed = asyncio.Event()
+
+    async def on_dismiss(e):
+        dismissed.set()
+
+    page.show_dialog(ft.AlertDialog(scrollable=True, modal=True,
+        on_dismiss=on_dismiss,
+        title=ui.text("Restaurer cette sauvegarde ?"),
+        content=ft.Column([
+            ui.text(f"Sauvegarde du {datetime.fromisoformat(snapshot.created):%d/%m/%Y à %H:%M}"),
+            ui.text(f"{len(snapshot.orders['orders'])} commande(s) · {snapshot.photo_count} photo(s)"),
+            ui.text("Les commandes seront ajoutées. Vos commandes actuelles seront conservées, "
+                    "y compris en cas de noms identiques. Le catalogue et les réglages seront remplacés. "
+                    "Une copie locale de secours sera créée avant toute modification.", color=ui.MUTED),
+            restore_error,
+        ], spacing=12, tight=True, width=max(160, min(420, (getattr(page, "width", None) or 390) - 80))),
+        actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()), restore_button]))
+    page.update()
+
+
 def show_import_screen(page):
     """Premier lancement (aucun catalogue) : importer un fichier, ou essayer le catalogue d'exemple."""
     file_picker = ft.FilePicker()  # service : on garde une référence
-    error_text = ft.Text("", color=ft.Colors.RED, text_align=ft.TextAlign.CENTER, selectable=True)
+    error_text = ui.text("", color=ft.Colors.ERROR, text_align=ft.TextAlign.CENTER, selectable=True)
 
     def start_app(skipped):
         page.controls.clear()
         main(page)
         if skipped:
             page.show_dialog(ft.AlertDialog(
-                title=ft.Text("Catalogue importé"),
-                content=ft.Text(skipped_summary(skipped), selectable=True),
+                scrollable=True,
+                title=ui.text("Catalogue importé"),
+                content=ui.text(skipped_summary(skipped), selectable=True),
                 actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
             ))
             page.update()
@@ -650,37 +780,49 @@ def show_import_screen(page):
             return
         start_app(skipped)
 
+    async def restore(e=None):
+        async def done():
+            page.controls.clear()
+            main(page)
+        await request_restore(page, file_picker, done)
+
     page.add(ft.SafeArea(expand=True, content=ft.Container(
         expand=True,
         alignment=ft.Alignment.CENTER,
-        padding=24,
-        content=ft.Column(
+        padding=16,
+        content=ft.Column(controls=[ui.card(ft.Column(
             [
-                ft.Icon(ft.Icons.UPLOAD_FILE, size=72, color=ft.Colors.BLUE_200),
-                ft.Text("Aucun catalogue", size=22, weight=ft.FontWeight.BOLD),
-                ft.Text(
+                ft.Container(content=ft.Icon(ft.Icons.UPLOAD_FILE, size=36, color=ui.PRIMARY),
+                             padding=20, bgcolor=ft.Colors.PRIMARY_CONTAINER, border_radius=24),
+                ui.text("Tout commence par votre catalogue", size=26, weight=ft.FontWeight.W_600,
+                        text_align=ft.TextAlign.CENTER),
+                ui.text(
                     "Importez votre catalogue : un fichier .xlsx ou .csv dont la 1re ligne contient "
                     "les colonnes « " + " | ".join(CATALOGUE_COLUMNS.values()) + " ».",
-                    text_align=ft.TextAlign.CENTER, color=ft.Colors.GREY_700,
+                    text_align=ft.TextAlign.CENTER, color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
                 ft.Container(height=8),
-                ft.Button(
+                ui.button(
                     content="Importer un catalogue",
                     icon=ft.Icons.FOLDER_OPEN,
                     on_click=import_file,
                     style=ft.ButtonStyle(
-                        bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.PRIMARY, color=ft.Colors.ON_PRIMARY,
                         padding=ft.Padding.symmetric(horizontal=24, vertical=16),
                     ),
                 ),
                 ft.TextButton(content="Essayer avec le catalogue d'exemple", on_click=use_sample),
+                ft.TextButton(content="Restaurer une sauvegarde", icon=ft.Icons.RESTORE, on_click=restore),
+                ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=16, color=ui.MUTED),
+                        ui.text("Vos données restent sur cet appareil", size=12, color=ui.MUTED, expand=True)],
+                       spacing=8),
                 error_text,
             ],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             alignment=ft.MainAxisAlignment.CENTER,
-            spacing=12,
+            spacing=20,
             tight=True,
-        ),
+        ))], width=520, tight=True, scroll=ft.ScrollMode.AUTO),
     )))
 
 
@@ -689,8 +831,7 @@ def show_import_screen(page):
 
 def main(page: ft.Page):
     page.title = "Prise de Commande"
-    page.theme_mode = ft.ThemeMode.LIGHT
-    page.padding = 10
+    ui.configure_page(page)
 
     excel_items = load_catalogue()
     clipboard = ft.Clipboard()  # service : on garde une référence
@@ -701,7 +842,7 @@ def main(page: ft.Page):
 
     # Défini en premier : utilisé par les sauvegardes dès le démarrage
     def show_snack(message):
-        page.show_dialog(ft.SnackBar(ft.Text(message), duration=ft.Duration(milliseconds=2000)))
+        page.show_dialog(ft.SnackBar(ui.text(message, color=ft.Colors.ON_INVERSE_SURFACE), duration=ft.Duration(milliseconds=2000)))
 
     def refresh():
         """Envoie toutes les modifications à l'écran.
@@ -720,7 +861,15 @@ def main(page: ft.Page):
     if warning:
         startup_warnings.append(warning)
     migrated = migrate_cart_keys(orders)
-    state = {"current": current_id}
+    state = {"current": current_id, "tab": 0, "show_archived": False}
+    # Keep presentation state and mounted fields across window/fold transitions.
+    quantity_drafts = {}
+    catalogue_grids = []
+    catalogue_rows = {}
+    catalogue_badges = {}
+    favorite_buttons = {}
+    window = {"layout": ui.WindowLayout(getattr(page, "width", None) or 390,
+                                         getattr(page, "height", None) or 800)}
 
     # --- RÉGLAGES DU CATALOGUE (articles affichés, prix, articles ajoutés) ---
     prefs, warning = load_prefs(excel_items)
@@ -750,8 +899,8 @@ def main(page: ft.Page):
 
     # Aucune création automatique : s'il n'y a pas encore de commande,
     # l'écran d'aide « Créer une commande » s'affiche à la place du catalogue.
-    if state["current"] not in orders:
-        state["current"] = list(orders)[-1] if orders else None  # la plus récente
+    if state["current"] not in orders or orders[state["current"]].get("archived"):
+        state["current"] = next((k for k in reversed(orders) if not orders[k].get("archived")), None)
 
     def current_order():
         return orders[state["current"]]
@@ -772,6 +921,9 @@ def main(page: ft.Page):
             show_snack(f"⚠️ Sauvegarde des réglages impossible : {err}")
 
     # --- COMPOSANTS UI ---
+    def dialog_width():
+        return max(160, min(420, (getattr(page, "width", None) or 390) - 80))
+
     def update_catalogue_selector(dropdown, include_hidden=False):
         names = catalogues_of(cat["all"])
         if include_hidden or not names:
@@ -780,12 +932,18 @@ def main(page: ft.Page):
             names = [name for name in names if name not in prefs["hidden_catalogues"]]
         dropdown.options = [ft.DropdownOption(key=name, text=name or DEFAULT_CATALOGUE_LABEL)
                             for name in names]
-        if dropdown.value not in names:
+        choices = names[:]
+        if not include_hidden and len(names) > 1:
+            choices.append(ALL_CATALOGUES)
+            dropdown.options.insert(0, ft.DropdownOption(key=ALL_CATALOGUES, text="Tous les catalogues"))
+        if dropdown.value not in choices:
             dropdown.value = names[0] if names else None
         dropdown.visible = len(names) > 1
         dropdown.disabled = not names
 
     def entries_in(catalogue):
+        if catalogue == ALL_CATALOGUES:
+            return [entry for entry in cat["all"] if entry["Catalogue"] not in prefs["hidden_catalogues"]]
         return [entry for entry in cat["all"] if entry["Catalogue"] == catalogue]
 
     def managed_catalogues():
@@ -800,40 +958,53 @@ def main(page: ft.Page):
         category_dropdown.value = "Toutes"
         await on_catalogue_filter()
 
-    catalogue_dropdown = ft.Dropdown(
+    catalogue_dropdown = ui.dropdown(
         label="Catalogue", options=[], on_select=on_catalogue_select, expand=True,
     )
 
-    search_input = ft.TextField(
+    search_input = ui.field(
         label="Rechercher",
-        hint_text="ex. ecran dell 24",
+        hint_text="Un article, une référence…",
         prefix_icon=ft.Icons.SEARCH,
         on_change=on_catalogue_filter,
         expand=3,
     )
 
-    category_dropdown = ft.Dropdown(
+    category_dropdown = ui.dropdown(
         label="Catégorie",
         options=[],
         value="Toutes",
         on_select=on_catalogue_filter,
         expand=2,
     )
+    browse_mode = ft.SegmentedButton(
+        segments=[ft.Segment(value="all", label="Tous"),
+                  ft.Segment(value="favorites", label="Favoris"),
+                  ft.Segment(value="recent", label="Récents")],
+        selected=["all"], allow_empty_selection=False, show_selected_icon=False,
+        on_change=on_catalogue_filter, expand=True,
+    )
+    filter_tags = ft.Row([], spacing=6, scroll=ft.ScrollMode.AUTO, visible=False)
 
-    catalogue_listview = ft.ListView(expand=True, spacing=10, padding=10)
-    cart_listview = ft.ListView(expand=True, spacing=10, padding=10)
-    total_text = ft.Text(f"Total : {fmt_eur(0)}", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
+    catalogue_listview = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(bottom=12))
+    cart_listview = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(bottom=12))
+    catalogue_info = ui.text("", size=12, color=ui.MUTED)
+    total_text = ui.text(fmt_eur(0), size=26, weight=ft.FontWeight.W_600, color=ui.PRIMARY)
+    cart_info = ui.text("", size=12, color=ui.MUTED)
+    order_info = ui.text("", size=12, color=ui.MUTED)
 
     # Titre de la barre du haut = nom de la commande active
-    appbar_title = ft.Text("", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+    appbar_title = ui.text("", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                            weight=ft.FontWeight.W_600)
     # Menu latéral (comme la liste des conversations de Claude) : rempli par render_orders()
-    drawer = ft.NavigationDrawer(controls=[], selected_index=-1, bgcolor=ft.Colors.GREY_50)
+    drawer = ft.NavigationDrawer(controls=[], selected_index=-1, bgcolor=ui.PANEL)
 
     # --- LOGIQUE ---
 
     def go_to_tab(index):
-        tabs.selected_index = index
+        state["tab"] = index
+        navigation.selected_index = index
+        layout_workspace()
 
     def add_to_cart(item, qty):
         try:
@@ -855,6 +1026,10 @@ def main(page: ft.Page):
                 "quantite": qty,
             }
         persist()
+        prefs["recent"] = [item["Cle"]] + [key for key in prefs["recent"] if key != item["Cle"]][:19]
+        persist_prefs()
+        if browse_mode.selected == ["recent"]:
+            render_catalogue()
         render_all()
         show_snack(f"✅ Ajouté au panier (x{qty})")
         refresh()
@@ -901,7 +1076,7 @@ def main(page: ft.Page):
             refresh()
 
         page.show_dialog(ft.SnackBar(
-            ft.Text("🗑️ Ligne retirée du panier."),
+            ui.text("🗑️ Ligne retirée du panier.", color=ft.Colors.ON_INVERSE_SURFACE),
             action="Annuler",
             on_action=undo,
             persist=False,
@@ -951,16 +1126,17 @@ def main(page: ft.Page):
             refresh()
 
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("Vider le panier ?"),
-            content=ft.Text(
+            title=ui.text("Vider le panier ?"),
+            content=ui.text(
                 f"Les {order_count(order)} article(s) de « {order['name']} » "
                 f"({fmt_eur(order_total(order))}) seront retirés."
             ),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ft.Button(content="Vider", on_click=confirm,
-                          style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE)),
+                ui.button(content="Vider", on_click=confirm,
+                          style=ft.ButtonStyle(bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR)),
             ],
         ))
 
@@ -970,13 +1146,7 @@ def main(page: ft.Page):
             show_snack("Le panier est vide.")
             return
 
-        texte_email = f"Bonjour,\n\nVoici le détail de la commande « {order['name']} » :\n\n"
-        for item in order["items"].values():
-            sous_total = item["Prix"] * item["quantite"]
-            texte_email += f"- {item['quantite']}x {item['Nom']} ({fmt_eur(item['Prix'])}/u) = {fmt_eur(sous_total)}\n"
-        texte_email += f"\nTOTAL : {fmt_eur(order_total(order))}\n\nMerci."
-
-        await clipboard.set(texte_email)
+        await clipboard.set(order_email_text(order))
         show_snack("📋 Texte copié dans le presse-papiers !")
 
     # --- GESTION DES COMMANDES ---
@@ -999,7 +1169,7 @@ def main(page: ft.Page):
 
     def ask_name(title, initial, on_ok):
         """Petite boîte de dialogue avec un champ texte (création / renommage)."""
-        name_field = ft.TextField(
+        name_field = ui.field(
             value=initial,
             label="Nom de la commande",
             hint_text="ex. Cabinet Dupont – salle 2",
@@ -1014,12 +1184,13 @@ def main(page: ft.Page):
 
         name_field.on_submit = validate
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text(title),
+            title=ui.text(title),
             content=name_field,
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ft.Button(content="Valider", on_click=validate),
+                ui.button(content="Valider", on_click=validate),
             ],
         ))
 
@@ -1028,6 +1199,7 @@ def main(page: ft.Page):
 
         def done(name):
             new_order(name)
+            state["show_archived"] = False
             persist()
             render_all()
             go_to_tab(0)  # retour au catalogue pour remplir la nouvelle commande
@@ -1047,6 +1219,97 @@ def main(page: ft.Page):
 
         ask_name("Renommer la commande", orders[order_id]["name"], done)
 
+    async def duplicate_order_dialog(order_id):
+        await close_drawer()
+
+        def done(name):
+            new_id = None
+            try:
+                new_id, duplicate = duplicate_order(order_id, orders[order_id], name, orders)
+                save_orders({**orders, new_id: duplicate}, new_id)
+            except OSError as err:
+                if new_id:
+                    folder = photos_dir(new_id)
+                    for path in folder.glob("*"):
+                        path.unlink()
+                    if folder.exists():
+                        folder.rmdir()
+                show_snack(f"Duplication impossible : {err}")
+                return
+            orders[new_id] = duplicate
+            state.update(current=new_id, show_archived=False)
+            render_all()
+            go_to_tab(0)
+            show_snack("Commande dupliquée, avec ses remarques et photos.")
+
+        ask_name("Dupliquer la commande", f"{orders[order_id]['name']} — copie", done)
+
+    async def archive_order(order_id):
+        await close_drawer()
+        updated = copy.deepcopy(orders)
+        archived = not updated[order_id].get("archived", False)
+        if archived:
+            updated[order_id]["archived"] = True
+        else:
+            updated[order_id].pop("archived", None)
+        selected = state["current"]
+        if archived and selected == order_id:
+            selected = next((k for k in reversed(updated) if not updated[k].get("archived")), None)
+        elif not archived:
+            selected = order_id
+        try:
+            save_orders(updated, selected)
+        except OSError as err:
+            show_snack(f"Archivage impossible : {err}")
+            refresh()
+            return
+        orders.clear()
+        orders.update(updated)
+        state["current"] = selected
+        state["show_archived"] = archived
+        render_all()
+        show_snack("Commande archivée." if archived else "Commande réactivée.")
+        refresh()
+
+    def show_order_group(e=None):
+        state["show_archived"] = not state["show_archived"]
+        render_orders()
+
+    def edit_notes(e=None, key=None):
+        order = current_order()
+        target = order if key is None else order["items"][key]
+        attribute = "notes" if key is None else "note"
+        field = ui.field(label="Remarques", value=target.get(attribute, ""),
+            hint_text="Livraison, installation, matériel à remplacer…", multiline=True,
+            min_lines=3, max_lines=6, autofocus=True, capitalization=ft.TextCapitalization.SENTENCES)
+
+        def save(e=None):
+            value = (field.value or "").strip()
+            previous = target.get(attribute)
+            if value:
+                target[attribute] = value
+            else:
+                target.pop(attribute, None)
+            try:
+                save_orders(orders, state["current"])
+            except OSError as err:
+                if previous is None:
+                    target.pop(attribute, None)
+                else:
+                    target[attribute] = previous
+                field.error = f"Enregistrement impossible : {err}"
+                refresh()
+                return
+            page.pop_dialog()
+            render_all()
+            refresh()
+
+        page.show_dialog(ft.AlertDialog(scrollable=True, title=ui.text(
+            "Remarques de la commande" if key is None else target["Nom"]),
+            content=ft.Container(content=field, width=dialog_width()),
+            actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
+                     ui.button(content="Enregistrer", on_click=save)]))
+
     async def delete_order_dialog(order_id):
         await close_drawer()
         order = orders[order_id]
@@ -1059,16 +1322,17 @@ def main(page: ft.Page):
             shutil.rmtree(photos_dir(order_id), ignore_errors=True)  # ses photos aussi
             if state["current"] == order_id:
                 # la plus récente restante, ou aucune → écran d'aide
-                state["current"] = list(orders)[-1] if orders else None
+                state["current"] = next((k for k in reversed(orders) if not orders[k].get("archived")), None)
             persist()
             render_all()
             show_snack(f"🗑️ « {order['name']} » supprimée.")
             refresh()
 
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("Supprimer la commande ?"),
-            content=ft.Text(
+            title=ui.text("Supprimer la commande ?"),
+            content=ui.text(
                 f"« {order['name']} » ({order_count(order)} article(s), "
                 f"{fmt_eur(order_total(order))}) sera définitivement supprimée."
                 + (f"\nSes {len(order.get('photos', []))} photo(s) aussi."
@@ -1076,10 +1340,10 @@ def main(page: ft.Page):
             ),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ft.Button(
+                ui.button(
                     content="Supprimer",
                     on_click=confirm,
-                    style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE),
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR),
                 ),
             ],
         ))
@@ -1087,6 +1351,10 @@ def main(page: ft.Page):
     # --- RENDU CATALOGUE ---
     def render_catalogue():
         catalogue_listview.controls.clear()
+        catalogue_grids.clear()
+        catalogue_rows.clear()
+        catalogue_badges.clear()
+        favorite_buttons.clear()
         previous_catalogue = catalogue_dropdown.value
         update_catalogue_selector(catalogue_dropdown)
         if catalogue_dropdown.value != previous_catalogue:
@@ -1110,88 +1378,185 @@ def main(page: ft.Page):
             if matches_search(it["Nom_Article"], search_val)
             and (cat_val == "Toutes" or it["Categorie"] == cat_val)
         ]
+        mode = (browse_mode.selected or ["all"])[0]
+        if mode == "favorites":
+            filtered = [it for it in filtered if it["Cle"] in prefs["favorites"]]
+        elif mode == "recent":
+            filtered = sorted((it for it in filtered if it["Cle"] in prefs["recent"]),
+                              key=lambda it: prefs["recent"].index(it["Cle"]))
+        # Recents keep chronological order instead of being regrouped by category.
+        groups = [("Articles récents", filtered)] if mode == "recent" else [
+            (category, [it for it in filtered if it["Categorie"] == category]) for category in categories]
+        catalogue_info.value = f"{len(filtered)} article(s) · {len(categories_of(filtered))} catégorie(s)"
+        render_filter_tags()
 
         if not has_catalogue:
             catalogue_listview.controls.extend([
-                ft.Text("Aucun catalogue affiché. Activez un catalogue pour parcourir ses articles.",
-                        italic=True, color=ft.Colors.GREY_700),
+                ui.text("Aucun catalogue affiché. Activez un catalogue pour parcourir ses articles.",
+                        italic=True, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.TextButton(content="Gérer les catalogues", on_click=open_catalogue_manager),
             ])
         elif not shown:
-            catalogue_listview.controls.append(ft.Text(
+            catalogue_listview.controls.append(ui.text(
                 "Aucun article affiché.\nCochez des articles dans ☰ › Gérer les articles.",
-                italic=True, color=ft.Colors.GREY_700,
+                italic=True, color=ft.Colors.ON_SURFACE_VARIANT,
             ))
         elif not filtered:
-            catalogue_listview.controls.append(ft.Text(
-                "Aucun article ne correspond.", italic=True, color=ft.Colors.GREY_700,
+            title, description = "Aucun article ne correspond.", "Essayez un autre mot ou réinitialisez les filtres."
+            if mode == "favorites":
+                title, description = "Aucun favori dans cette sélection", "Touchez l'étoile d'un article pour le retrouver ici."
+            elif mode == "recent":
+                title, description = "Aucun article récent dans cette sélection", "Les derniers articles ajoutés au panier apparaîtront ici."
+            catalogue_listview.controls.append(ui.empty(
+                ft.Icons.SEARCH_OFF, title, description,
+                ft.TextButton(content="Réinitialiser les filtres", on_click=reset_filters),
             ))
 
-        for categorie in categories:
-            group = [it for it in filtered if it["Categorie"] == categorie]
+        for categorie, group in groups:
             if not group:
                 continue
 
             # En-tête de catégorie
             catalogue_listview.controls.append(
                 ft.Container(
-                    content=ft.Text(f"{get_category_icon(categorie)} {categorie}", size=18, weight=ft.FontWeight.BOLD),
-                    bgcolor=ft.Colors.BLUE_50,
-                    padding=10,
-                    border_radius=5,
-                    margin=ft.Margin.only(top=10),
+                    content=ft.Row([
+                        ft.Icon(get_category_icon(categorie), size=20, color=ui.PRIMARY),
+                        ui.text(categorie, size=16, weight=ft.FontWeight.W_600, expand=True),
+                        ui.text(str(len(group)), size=12, color=ui.MUTED),
+                    ], spacing=10),
+                    padding=ft.Padding.symmetric(vertical=4, horizontal=4),
+                    margin=ft.Margin.only(top=2),
                 )
             )
 
-            # Articles
+            # The grid responds to the pane width, including resized windows.
+            group_cards = []
             for current_item in group:
-                qty_field = ft.TextField(
-                    value="1", width=50, text_align=ft.TextAlign.CENTER,
+                draft_key = (state["current"], current_item["Cle"])
+                qty_field = ui.field(
+                    value=quantity_drafts.get(draft_key, "1"), width=64, text_align=ft.TextAlign.CENTER,
                     keyboard_type=ft.KeyboardType.NUMBER,
                     input_filter=ft.NumbersOnlyInputFilter(),
-                    dense=True,
+                    dense=True, tooltip=f"Quantité à ajouter : {current_item['Nom_Article']}",
+                    on_change=lambda e, k=draft_key: quantity_drafts.__setitem__(k, e.control.value),
                 )
+                def adjust(e, q=qty_field, k=draft_key, delta=1):
+                    change_qty_field(q, delta)
+                    quantity_drafts[k] = q.value
 
                 # Flèches ▼ / ▲ pour ajuster la quantité à ajouter (minimum 1)
                 btn_down = ft.IconButton(
-                    icon=ft.Icons.KEYBOARD_ARROW_DOWN,
+                    icon=ft.Icons.REMOVE,
                     tooltip="Diminuer",
-                    visual_density=ft.VisualDensity.COMPACT,
-                    on_click=lambda e, q=qty_field: change_qty_field(q, -1),
+                    width=48, height=48,
+                    on_click=lambda e, fn=adjust: fn(e, delta=-1),
                 )
                 btn_up = ft.IconButton(
-                    icon=ft.Icons.KEYBOARD_ARROW_UP,
+                    icon=ft.Icons.ADD,
                     tooltip="Augmenter",
-                    visual_density=ft.VisualDensity.COMPACT,
-                    on_click=lambda e, q=qty_field: change_qty_field(q, 1),
+                    width=48, height=48, on_click=adjust,
                 )
 
                 add_btn = ft.IconButton(
                     icon=ft.Icons.ADD_SHOPPING_CART,
-                    icon_color=ft.Colors.WHITE,
-                    bgcolor=ft.Colors.BLUE,
+                    icon_color=ft.Colors.ON_PRIMARY,
+                    bgcolor=ui.PRIMARY, width=48, height=48,
+                    tooltip=f"Ajouter au panier : {current_item['Nom_Article']}",
                     on_click=lambda e, item=current_item, q=qty_field: add_to_cart(item, q.value),
                 )
+                qty_field.on_submit = add_btn.on_click
 
-                catalogue_listview.controls.append(
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text(current_item["Nom_Article"], weight=ft.FontWeight.W_500),
-                            ft.Row([
-                                ft.Text(fmt_eur(current_item['Prix_Unitaire']), color=ft.Colors.GREEN_700, weight=ft.FontWeight.BOLD),
-                                ft.Row(
-                                    [btn_down, qty_field, btn_up, add_btn],
-                                    alignment=ft.MainAxisAlignment.END,
-                                    spacing=2,
-                                ),
-                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        ]),
-                        padding=10,
-                        border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.GREY_300)),
-                    )
+                name = ui.text(current_item["Nom_Article"], size=15, weight=ft.FontWeight.W_600)
+                favorite = ft.IconButton(
+                    icon=ft.Icons.STAR if current_item["Cle"] in prefs["favorites"] else ft.Icons.STAR_BORDER,
+                    icon_color=ui.PRIMARY, width=48, height=48,
+                    tooltip=f"Favori : {current_item['Nom_Article']}",
+                    on_click=lambda e, k=current_item["Cle"]: toggle_favorite(k),
                 )
+                favorite_buttons[current_item["Cle"]] = favorite
+                badge = ui.text("", size=12, color=ui.PRIMARY, visible=False)
+                catalogue_badges[current_item["Cle"]] = badge
+                origin = ui.text(current_item["Catalogue"] or "Catalogue principal", size=11, color=ui.MUTED,
+                                 visible=catalogue_dropdown.value == ALL_CATALOGUES)
+                description = ft.Column([name, origin, badge], spacing=2, tight=True)
+                price = ui.text(fmt_eur(current_item['Prix_Unitaire']), color=ui.PRIMARY,
+                                size=16, weight=ft.FontWeight.W_600)
+                actions = ft.Row([btn_down, qty_field, btn_up, add_btn], spacing=0, tight=True)
+                compact = ft.Column([
+                    ft.Row([ft.Container(content=description, expand=True), favorite], spacing=4),
+                    ft.Row([price, actions], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                           wrap=True, spacing=8, run_spacing=4),
+                ], spacing=4, tight=True)
+                wide = ft.Row([
+                    ft.Column([description, ft.Row([price, favorite], spacing=4, wrap=True)],
+                              spacing=2, tight=True, expand=True),
+                    actions,
+                ], spacing=12)
+                card = ui.item_card(compact)
+                catalogue_rows[id(card)] = (compact, wide)
+                group_cards.append(card)
+            grid = ft.ResponsiveRow(group_cards, spacing=8, run_spacing=8)
+            catalogue_grids.append(grid)
+            catalogue_listview.controls.append(grid)
+        apply_catalogue_columns()
+        update_catalogue_badges()
+        state["catalogue_order"] = state["current"]
         # Plus besoin de page.update() : Flet 1.0 met à jour automatiquement
         # après chaque gestionnaire d'événement et après main().
+
+    def reset_filters(e=None):
+        search_input.value = ""
+        category_dropdown.value = "Toutes"
+        browse_mode.selected = ["all"]
+        render_catalogue()
+        refresh()
+
+    def toggle_favorite(key):
+        previous = set(prefs["favorites"])
+        if key in prefs["favorites"]:
+            prefs["favorites"].remove(key)
+        else:
+            prefs["favorites"].add(key)
+        try:
+            save_prefs(prefs)
+        except OSError as err:
+            prefs["favorites"] = previous
+            show_snack(f"Favori non enregistré : {err}")
+            refresh()
+            return
+        if browse_mode.selected == ["favorites"]:
+            render_catalogue()
+        else:
+            favorite_buttons[key].icon = ft.Icons.STAR if key in prefs["favorites"] else ft.Icons.STAR_BORDER
+        refresh()
+
+    def update_catalogue_badges():
+        items = cart() if state["current"] else {}
+        for key, badge in catalogue_badges.items():
+            quantity = items.get(key, {}).get("quantite", 0)
+            badge.value = f"Déjà {quantity} dans la commande" if quantity else ""
+            badge.visible = quantity > 0
+
+    def render_filter_tags():
+        tags = []
+        def clear(attribute, value):
+            setattr(attribute, "value", value)
+            render_catalogue()
+            refresh()
+        if catalogue_dropdown.visible:
+            value = catalogue_dropdown.value
+            tags.append(ft.Chip(label=(value or "Catalogue principal") if value != ALL_CATALOGUES else "Tous les catalogues",
+                on_click=lambda e: toggle_filters(),
+                on_delete=(lambda e: clear(catalogue_dropdown, ALL_CATALOGUES)) if value != ALL_CATALOGUES else None,
+                delete_icon_tooltip="Rechercher dans tous les catalogues"))
+        if category_dropdown.value != "Toutes":
+            tags.append(ft.Chip(label=category_dropdown.value, on_delete=lambda e: clear(category_dropdown, "Toutes"),
+                                delete_icon_tooltip="Retirer le filtre de catégorie"))
+        if search_input.value:
+            tags.append(ft.Chip(label=f"Recherche : {search_input.value[:40]}",
+                on_delete=lambda e: clear(search_input, ""), delete_icon_tooltip="Effacer la recherche"))
+        filter_tags.controls = tags
+        filter_tags.visible = bool(tags)
 
     # --- RENDU PANIER ---
     def render_cart():
@@ -1199,16 +1564,21 @@ def main(page: ft.Page):
         items = cart()
 
         if not items:
-            cart_listview.controls.append(ft.Text("Le panier est vide.", italic=True))
+            cart_listview.controls.append(ui.empty(
+                ft.Icons.SHOPPING_BAG_OUTLINED, "Votre panier est prêt",
+                "Ajoutez des articles du catalogue pour préparer votre commande.",
+                ft.TextButton(content="Parcourir le catalogue", icon=ft.Icons.ARROW_FORWARD,
+                              on_click=lambda e: go_to_tab(0)),
+            ))
         else:
             for id_art, item in items.items():
                 sous_total = item["Prix"] * item["quantite"]
-                subtotal_text = ft.Text(fmt_eur(sous_total), weight=ft.FontWeight.BOLD,
-                                        color=ft.Colors.GREEN_700)
+                subtotal_text = ui.text(fmt_eur(sous_total), weight=ft.FontWeight.BOLD,
+                                        color=ui.PRIMARY)
 
                 # Quantité modifiable au clavier, ou avec − / +
-                qty_field = ft.TextField(
-                    value=str(item["quantite"]), width=60, dense=True,
+                qty_field = ui.field(
+                    value=str(item["quantite"]), width=64, dense=True,
                     text_align=ft.TextAlign.CENTER,
                     keyboard_type=ft.KeyboardType.NUMBER,
                     input_filter=ft.NumbersOnlyInputFilter(),
@@ -1218,30 +1588,31 @@ def main(page: ft.Page):
                 qty_field.on_blur = lambda e, i=id_art, f=qty_field, t=subtotal_text: set_cart_qty(i, f, t, True)
                 qty_field.on_submit = lambda e, i=id_art, f=qty_field, t=subtotal_text: set_cart_qty(i, f, t, True)
 
-                btn_minus = ft.IconButton(icon=ft.Icons.REMOVE_CIRCLE_OUTLINE, tooltip="Diminuer",
+                btn_minus = ft.IconButton(icon=ft.Icons.REMOVE, tooltip="Diminuer", width=48, height=48,
                                           on_click=lambda e, i=id_art: update_cart_qty(i, -1))
-                btn_plus = ft.IconButton(icon=ft.Icons.ADD_CIRCLE_OUTLINE, tooltip="Augmenter",
+                btn_plus = ft.IconButton(icon=ft.Icons.ADD, tooltip="Augmenter", width=48, height=48,
                                          on_click=lambda e, i=id_art: update_cart_qty(i, 1))
-                btn_delete = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_400,
+                btn_delete = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.ERROR,
                                            tooltip="Retirer du panier",
-                                           visual_density=ft.VisualDensity.COMPACT,
+                                           width=48, height=48,
                                            on_click=lambda e, i=id_art: remove_cart_line(i))
+                btn_note = ft.IconButton(icon=ft.Icons.NOTES, width=48, height=48,
+                    icon_color=ui.PRIMARY if item.get("note") else ui.MUTED,
+                    tooltip=f"Remarque : {item['Nom']}", on_click=lambda e, k=id_art: edit_notes(key=k))
 
                 cart_listview.controls.append(
-                    ft.Container(
+                    ui.item_card(
                         content=ft.Column([
                             ft.Row([
-                                ft.Text(item["Nom"], weight=ft.FontWeight.W_500, expand=True),
-                                btn_delete,
-                            ], vertical_alignment=ft.CrossAxisAlignment.START),
-                            ft.Text(f"{fmt_eur(item['Prix'])} / unité", size=12, color=ft.Colors.GREY_700),
-                            ft.Row([
-                                ft.Row([btn_minus, qty_field, btn_plus], spacing=0),
+                                ui.text(item["Nom"], weight=ft.FontWeight.W_500, expand=True),
                                 subtotal_text,
-                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        ], spacing=2),
-                        padding=ft.Padding.only(left=10, right=4, top=6, bottom=10),
-                        border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.GREY_300)),
+                            ], vertical_alignment=ft.CrossAxisAlignment.START),
+                            ui.text(item.get("note", ""), size=12, color=ui.MUTED, visible=bool(item.get("note"))),
+                            ft.Row([
+                                ui.text(f"{fmt_eur(item['Prix'])} / unité", size=12, color=ui.MUTED),
+                                ft.Row([btn_minus, qty_field, btn_plus, btn_note, btn_delete], spacing=0, tight=True),
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, spacing=8, run_spacing=4),
+                        ], spacing=4, tight=True),
                     )
                 )
 
@@ -1250,9 +1621,18 @@ def main(page: ft.Page):
     def update_cart_summary():
         """Total en bas du panier et nombre d'articles dans l'onglet « Panier »."""
         order = current_order()
-        total_text.value = f"Total : {fmt_eur(order_total(order))}"
+        total_text.value = fmt_eur(order_total(order))
         n = order_count(order)
-        cart_tab.label = f"🛍️ Panier ({n})" if n else "🛍️ Panier"
+        cart_tab.label = f"Panier ({n})" if n else "Panier"
+        cart_info.value = f"{n} article(s) · {len(order['items'])} référence(s)"
+        order_info.value = f"{n} article(s) · {fmt_eur(order_total(order))}"
+        compact_cart_btn.content = f"{n} article(s) · {fmt_eur(order_total(order))}"
+        notes_preview.value = current_order().get("notes", "")
+        notes_preview.visible = bool(notes_preview.value)
+        archive_banner.visible = bool(order.get("archived"))
+        copy_order_btn.disabled = not bool(order["items"])
+        clear_order_btn.disabled = not bool(order["items"])
+        update_catalogue_badges()
 
     # --- RENDU DU MENU LATÉRAL (liste des commandes) ---
     def order_handlers(order_id):
@@ -1266,7 +1646,17 @@ def main(page: ft.Page):
         async def on_delete(e):
             await delete_order_dialog(order_id)
 
-        return on_select, on_rename, on_delete
+        async def on_duplicate(e):
+            await duplicate_order_dialog(order_id)
+
+        async def on_archive(e):
+            await archive_order(order_id)
+
+        async def on_notes(e):
+            await select_order(order_id)
+            edit_notes()
+
+        return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes
 
     def render_orders():
         n_total = len(cat["all"])
@@ -1277,19 +1667,19 @@ def main(page: ft.Page):
             ft.Container(
                 padding=ft.Padding.only(left=16, right=16, top=16, bottom=8),
                 content=ft.Row([
-                    ft.Icon(ft.Icons.RECEIPT_LONG, color=ft.Colors.BLUE_900),
-                    ft.Text("Prise de Commande", size=18, weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.BLUE_900),
+                    ft.Icon(ft.Icons.RECEIPT_LONG, color=ft.Colors.PRIMARY),
+                    ui.text("Prise de Commande", size=18, weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.PRIMARY),
                 ]),
             ),
             ft.Container(
                 padding=ft.Padding.symmetric(horizontal=12, vertical=4),
                 content=ft.Row([
-                    ft.Button(
+                    ui.button(
                         content="Nouvelle commande",
                         icon=ft.Icons.EDIT_SQUARE,
                         on_click=create_order_dialog,
-                        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY, color=ft.Colors.ON_PRIMARY),
                         expand=True,
                     ),
                 ]),
@@ -1299,9 +1689,9 @@ def main(page: ft.Page):
                 content=ft.ListTile(
                     dense=True,
                     shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ft.Colors.BLUE_900),
-                    title=ft.Text("Gérer les catalogues", weight=ft.FontWeight.W_500),
-                    subtitle=ft.Text(f"{n_catalogues_visible} affichés sur {len(names)}", size=12),
+                    leading=ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ft.Colors.PRIMARY),
+                    title=ui.text("Gérer les catalogues", weight=ft.FontWeight.W_500),
+                    subtitle=ui.text(f"{n_catalogues_visible} affichés sur {len(names)}", size=12),
                     on_click=open_catalogue_manager,
                 ),
             ),
@@ -1310,9 +1700,9 @@ def main(page: ft.Page):
                 content=ft.ListTile(
                     dense=True,
                     shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.TUNE, color=ft.Colors.BLUE_900),
-                    title=ft.Text("Gérer les articles", weight=ft.FontWeight.W_500),
-                    subtitle=ft.Text(f"{n_visible} affichés sur {n_total}", size=12),
+                    leading=ft.Icon(ft.Icons.TUNE, color=ft.Colors.PRIMARY),
+                    title=ui.text("Gérer les articles", weight=ft.FontWeight.W_500),
+                    subtitle=ui.text(f"{n_visible} affichés sur {n_total}", size=12),
                     on_click=open_admin,
                 ),
             ),
@@ -1321,36 +1711,38 @@ def main(page: ft.Page):
                 content=ft.ListTile(
                     dense=True,
                     shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.UPLOAD_FILE, color=ft.Colors.BLUE_900),
-                    title=ft.Text("Importer un catalogue", weight=ft.FontWeight.W_500),
-                    subtitle=ft.Text("Remplace le catalogue actuel (.xlsx ou .csv)", size=12),
+                    leading=ft.Icon(ft.Icons.UPLOAD_FILE, color=ft.Colors.PRIMARY),
+                    title=ui.text("Importer un catalogue", weight=ft.FontWeight.W_500),
+                    subtitle=ui.text("Remplace le catalogue actuel (.xlsx ou .csv)", size=12),
                     on_click=replace_catalogue,
                 ),
             ),
             ft.Divider(height=1),
             ft.Container(
                 padding=ft.Padding.only(left=16, top=12, bottom=4),
-                content=ft.Text("Commandes", size=12, weight=ft.FontWeight.W_600,
-                                color=ft.Colors.GREY_700),
+                content=ui.text("Commandes", size=12, weight=ft.FontWeight.W_600,
+                                color=ft.Colors.ON_SURFACE_VARIANT),
             ),
         ]
 
         if not orders:
             controls.append(ft.Container(
                 padding=ft.Padding.symmetric(horizontal=16, vertical=8),
-                content=ft.Text(
+                content=ui.text(
                     "Aucune commande pour l'instant.\n"
                     "Appuyez sur « Nouvelle commande » pour commencer.",
-                    size=13, italic=True, color=ft.Colors.GREY_600,
+                    size=13, italic=True, color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
             ))
 
         # Les plus récentes en premier (le dict garde l'ordre de création)
         for order_id in reversed(list(orders)):
             order = orders[order_id]
+            if bool(order.get("archived")) != state["show_archived"]:
+                continue
             is_active = order_id == state["current"]
             created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
-            on_select, on_rename, on_delete = order_handlers(order_id)
+            on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes = order_handlers(order_id)
 
             controls.append(
                 ft.Container(
@@ -1358,11 +1750,11 @@ def main(page: ft.Page):
                     content=ft.ListTile(
                         dense=True,
                         shape=ft.RoundedRectangleBorder(radius=10),
-                        title=ft.Text(
+                        title=ui.text(
                             order["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                             weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
                         ),
-                        subtitle=ft.Text(
+                        subtitle=ui.text(
                             f"{created} · {order_count(order)} art. · {fmt_eur(order_total(order))}"
                             + (f" · 📷 {len(order['photos'])}" if order.get("photos") else ""),
                             size=12,
@@ -1371,6 +1763,12 @@ def main(page: ft.Page):
                             icon=ft.Icons.MORE_VERT,
                             tooltip="Options",
                             items=[
+                                ft.PopupMenuItem(content="Remarques", icon=ft.Icons.NOTES, on_click=on_notes),
+                                ft.PopupMenuItem(content="Dupliquer", icon=ft.Icons.CONTENT_COPY,
+                                    on_click=on_duplicate),
+                                ft.PopupMenuItem(content="Réactiver" if order.get("archived") else "Archiver",
+                                    icon=ft.Icons.UNARCHIVE_OUTLINED if order.get("archived") else ft.Icons.ARCHIVE_OUTLINED,
+                                    on_click=on_archive),
                                 ft.PopupMenuItem(content="Renommer", icon=ft.Icons.EDIT_OUTLINED,
                                                  on_click=on_rename),
                                 ft.PopupMenuItem(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE,
@@ -1378,43 +1776,61 @@ def main(page: ft.Page):
                             ],
                         ),
                         selected=is_active,
-                        selected_color=ft.Colors.BLUE_900,
-                        selected_tile_color=ft.Colors.BLUE_100,
+                        selected_color=ft.Colors.PRIMARY,
+                        selected_tile_color=ft.Colors.PRIMARY_CONTAINER,
                         on_click=on_select,
                     ),
                 )
             )
 
+        archives = sum(bool(order.get("archived")) for order in orders.values())
+        controls.insert(6, ft.Container(padding=8, content=ft.Row([
+            ft.TextButton(content="Commandes actives" if state["show_archived"] else f"Archives ({archives})",
+                icon=ft.Icons.ARCHIVE_OUTLINED, on_click=show_order_group, expand=True),
+        ])))
+        controls.extend([
+            ft.Divider(),
+            ft.ListTile(title=ui.text("Sauvegarder / restaurer"), leading=ft.Icon(ft.Icons.BACKUP_OUTLINED),
+                        on_click=open_backup_view),
+        ])
+        if not any(bool(order.get("archived")) == state["show_archived"] for order in orders.values()):
+            controls.append(ft.Container(padding=16, content=ui.text(
+                "Aucune commande archivée." if state["show_archived"] else "Aucune commande active.", color=ui.MUTED)))
         drawer.controls = controls
 
     def render_all():
+        if state.get("catalogue_order", object()) != state["current"]:
+            render_catalogue()
         if state["current"] is None:
             # Pas de commande : écran d'aide à la place du catalogue / panier
             appbar_title.value = "Prise de Commande"
+            order_info.value = ""
             body.content = empty_state
         else:
             appbar_title.value = current_order()["name"]
-            body.content = tabs
+            body.content = workspace
             render_cart()
             render_photos()
+            layout_workspace()
+        update_catalogue_badges()
         render_orders()
 
     # =====================================================================
     # --- ÉCRAN « GÉRER LES ARTICLES » : affichage, prix, articles ajoutés ---
     # =====================================================================
 
-    admin_search = ft.TextField(
+    admin_search = ui.field(
         label="Rechercher",
         prefix_icon=ft.Icons.SEARCH,
         expand=3,
     )
-    admin_category = ft.Dropdown(
+    admin_category = ui.dropdown(
         label="Catégorie",
         options=[],
         value="Toutes",
         expand=2,
     )
-    admin_catalogue = ft.Dropdown(label="Catalogue", options=[], expand=True)
+    admin_catalogue = ui.dropdown(label="Catalogue", options=[], expand=True)
     # Filtre Tous / Affichés / Masqués (les nombres sont mis à jour par refresh_admin_info)
     admin_visibility = ft.SegmentedButton(
         segments=[
@@ -1426,6 +1842,7 @@ def main(page: ft.Page):
         allow_empty_selection=False,
         allow_multiple_selection=False,
         show_selected_icon=False,
+        style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=10, vertical=14)),
         expand=True,
     )
     admin_listview = ft.ListView(expand=True, spacing=0, padding=ft.Padding.only(bottom=24))
@@ -1463,10 +1880,10 @@ def main(page: ft.Page):
         entries = entries_in(admin_catalogue.value)
         n_visible = sum(entry["Visible"] for entry in entries)
         n_total = len(entries)
-        labels = {"tous": f"Tous {n_total}", "affiches": f"Affichés {n_visible}",
-                  "masques": f"Masqués {n_total - n_visible}"}
+        labels = {"tous": "Tous", "affiches": "Affichés", "masques": "Masqués"}
         for segment in admin_visibility.segments:
             segment.label = labels[segment.value]
+        admin_info.value = f"{n_visible} articles affichés sur {n_total} · prix enregistrés automatiquement"
 
     def refresh_admin_row(key):
         refs = admin_rows.get(key)
@@ -1474,7 +1891,7 @@ def main(page: ft.Page):
         if not refs or not entry:
             return
         refs["checkbox"].value = entry["Visible"]
-        refs["name"].color = None if entry["Visible"] else ft.Colors.GREY_500
+        refs["name"].color = None if entry["Visible"] else ft.Colors.ON_SURFACE_VARIANT
         modified = not entry["Perso"] and abs(entry["Prix_Unitaire"] - entry["Prix_Excel"]) >= 0.005
         if entry["Perso"]:
             refs["detail"].value = "Article ajouté"
@@ -1565,9 +1982,9 @@ def main(page: ft.Page):
             tooltip="Afficher dans le catalogue",
             on_change=lambda e, k=key: set_visible([k], bool(e.control.value)),
         )
-        name = ft.Text(entry["Nom_Article"], weight=ft.FontWeight.W_500, size=14)
-        detail = ft.Text("", size=11, color=ft.Colors.ORANGE_800, italic=True)
-        price_field = ft.TextField(
+        name = ui.text(entry["Nom_Article"], weight=ft.FontWeight.W_500, size=14)
+        detail = ui.text("", size=11, color=ft.Colors.ON_SURFACE_VARIANT, italic=True)
+        price_field = ui.field(
             value=fmt_input(entry['Prix_Unitaire']),
             width=118,  # assez large pour « 1350,00 € »
             dense=True,
@@ -1583,37 +2000,38 @@ def main(page: ft.Page):
         refs = {"checkbox": checkbox, "name": name, "detail": detail}
         if entry["Perso"]:
             extra = ft.IconButton(
-                icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_400,
+                icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.ERROR,
                 tooltip="Supprimer cet article",
-                visual_density=ft.VisualDensity.COMPACT,
+                width=48, height=48,
                 on_click=lambda e, k=key: delete_article_dialog(k),
             )
         else:
             extra = ft.IconButton(
                 icon=ft.Icons.RESTART_ALT,
                 tooltip="Revenir au prix de l'Excel",
-                visual_density=ft.VisualDensity.COMPACT,
+                width=48, height=48,
                 on_click=lambda e, k=key, f=price_field: reset_price(k, f),
             )
             refs["reset"] = extra
         admin_rows[key] = refs
         refresh_admin_row(key)
 
-        return ft.Container(
-            padding=ft.Padding.only(left=0, right=4, top=4, bottom=4),
-            border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.GREY_200)),
-            content=ft.Row(
-                [
-                    checkbox,
-                    ft.Column([name, detail], spacing=0, expand=True, tight=True),
-                    price_field,
-                    # largeur fixe : les champs de prix restent alignés, bouton visible ou non
-                    ft.Container(content=extra, width=40),
-                ],
-                spacing=4,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
+        description = ft.Column([name, detail], spacing=2, expand=True, tight=True)
+        compact = ft.Column([
+            ft.Row([checkbox, description], spacing=4),
+            ft.Row([price_field, extra], alignment=ft.MainAxisAlignment.END, spacing=4),
+        ], spacing=4, tight=True)
+        wide = ft.Row([checkbox, description, price_field, extra], spacing=4)
+        card = ui.item_card(compact)
+        refs.update(card=card, compact=compact, wide=wide)
+        return card
+
+    def apply_admin_density():
+        width = window["layout"].width
+        columns = 3 if width >= 1100 else 2 if width >= 680 else 1
+        card_width = (width - 32 - (columns - 1) * 8) / columns
+        for refs in admin_rows.values():
+            refs["card"].content = refs["wide"] if card_width >= 340 else refs["compact"]
 
     def render_admin():
         admin_listview.controls.clear()
@@ -1629,7 +2047,7 @@ def main(page: ft.Page):
         filtered = admin_filtered()
         if not filtered:
             admin_listview.controls.append(ft.Container(
-                padding=16, content=ft.Text("Aucun article ne correspond.", italic=True)))
+                padding=16, content=ui.text("Aucun article ne correspond.", italic=True)))
 
         for categorie in categories:
             group = [e for e in filtered if e["Categorie"] == categorie]
@@ -1639,23 +2057,29 @@ def main(page: ft.Page):
                 tooltip="Tout cocher / tout décocher",
                 on_change=lambda e, c=categorie: toggle_category(c),
             )
-            counter = ft.Text("", size=12, color=ft.Colors.GREY_700)
+            counter = ui.text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
             admin_headers[categorie] = (header_checkbox, counter, [e["Cle"] for e in group])
             admin_listview.controls.append(ft.Container(
-                bgcolor=ft.Colors.BLUE_50,
-                border_radius=5,
-                margin=ft.Margin.only(top=10),
+                bgcolor=ft.Colors.SURFACE_CONTAINER,
+                border_radius=14,
+                margin=ft.Margin.only(top=4),
                 padding=ft.Padding.only(left=0, right=12, top=2, bottom=2),
                 content=ft.Row([
                     header_checkbox,
-                    ft.Text(f"{get_category_icon(categorie)} {categorie}", size=16,
+                    ft.Icon(get_category_icon(categorie), size=20, color=ui.PRIMARY),
+                    ui.text(categorie, size=16,
                             weight=ft.FontWeight.BOLD, expand=True),
                     counter,
                 ]),
             ))
             refresh_admin_header(categorie)
-            for entry in group:
-                admin_listview.controls.append(admin_row(entry))
+            cards = [admin_row(entry) for entry in group]
+            for card in cards:
+                card.col = {"xs": 12, "md": 6, "lg": 4}
+            admin_listview.controls.append(ft.ResponsiveRow(
+                cards, spacing=8, run_spacing=8, breakpoints={"xs": 0, "md": 680, "lg": 1100},
+            ))
+        apply_admin_density()
         refresh_admin_info()
 
     def add_article_dialog(e=None):
@@ -1665,36 +2089,36 @@ def main(page: ft.Page):
         initial_cat = admin_category.value if admin_category.value in categories else (
             categories[0] if categories else new_cat_key)
 
-        name_field = ft.TextField(label="Nom de l'article", autofocus=True,
+        name_field = ui.field(label="Nom de l'article", autofocus=True,
                                   capitalization=ft.TextCapitalization.SENTENCES)
-        new_cat_field = ft.TextField(label="Nom de la nouvelle catégorie",
+        new_cat_field = ui.field(label="Nom de la nouvelle catégorie",
                                      capitalization=ft.TextCapitalization.SENTENCES,
                                      visible=initial_cat == new_cat_key)
-        cat_field = ft.Dropdown(
+        cat_field = ui.dropdown(
             label="Catégorie",
             options=[ft.DropdownOption(key=c, text=c) for c in categories]
                     + [ft.DropdownOption(key=new_cat_key, text="➕ Nouvelle catégorie…")],
             value=initial_cat,
-            width=400,
+            width=dialog_width(),
         )
         cat_field.on_select = lambda e: setattr(new_cat_field, "visible", cat_field.value == new_cat_key)
-        price_field = ft.TextField(label="Prix unitaire", suffix="€", keyboard_type=ft.KeyboardType.NUMBER)
-        error_text = ft.Text("", color=ft.Colors.RED, size=12, visible=False)
-
-        def fail(message):
-            error_text.value = message
-            error_text.visible = True
+        price_field = ui.field(label="Prix unitaire", suffix="€", keyboard_type=ft.KeyboardType.NUMBER)
+        def fail(field, message):
+            field.error = message
+            field.error_max_lines = 3
 
         def validate(e=None):
+            for field in (name_field, new_cat_field, price_field):
+                field.error = None
             name = norm_text(name_field.value or "")
             category = norm_text(new_cat_field.value or "") if cat_field.value == new_cat_key else cat_field.value
             price = _to_price(price_field.value)
             if not name:
-                return fail("Indiquez le nom de l'article.")
+                return fail(name_field, "Indiquez le nom de l'article.")
             if not category:
-                return fail("Indiquez le nom de la nouvelle catégorie.")
+                return fail(new_cat_field, "Indiquez le nom de la nouvelle catégorie.")
             if price is None or price < 0:
-                return fail("Prix invalide : saisissez un nombre, ex. 1190 ou 79,50.")
+                return fail(price_field, "Prix invalide : saisissez un nombre, ex. 1190 ou 79,50.")
             page.pop_dialog()
             prefs["custom"].append({
                 "key": KEY_PERSO + uuid.uuid4().hex[:8],
@@ -1712,13 +2136,14 @@ def main(page: ft.Page):
         name_field.on_submit = validate
         price_field.on_submit = validate
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("Ajouter un article"),
-            content=ft.Column([name_field, cat_field, new_cat_field, price_field, error_text],
-                              tight=True, spacing=12, width=400),
+            title=ui.text("Ajouter un article"),
+            content=ft.Column([name_field, cat_field, new_cat_field, price_field],
+                              tight=True, spacing=12, width=dialog_width()),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ft.Button(content="Ajouter", on_click=validate),
+                ui.button(content="Ajouter", on_click=validate),
             ],
         ))
 
@@ -1740,23 +2165,36 @@ def main(page: ft.Page):
             refresh()
 
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("Supprimer l'article ?"),
-            content=ft.Text(f"« {entry['Nom_Article']} » sera retiré du catalogue.\n"
+            title=ui.text("Supprimer l'article ?"),
+            content=ui.text(f"« {entry['Nom_Article']} » sera retiré du catalogue.\n"
                             "Les commandes qui le contiennent déjà ne changent pas."),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                ft.Button(content="Supprimer", on_click=confirm,
-                          style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE)),
+                ui.button(content="Supprimer", on_click=confirm,
+                          style=ft.ButtonStyle(bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR)),
             ],
         ))
 
+    admin_info = ui.text("", size=12, color=ui.MUTED)
+    admin_listview.spacing = 6
+    admin_search.expand = True
+    admin_catalogue.col = admin_category.col = 12
+    admin_filter_details = ft.ResponsiveRow([admin_catalogue, admin_category], spacing=12, run_spacing=12)
+    admin_filter_details.visible = window["layout"].width >= 600 and not window["layout"].short
+
+    def toggle_admin_filters(e=None):
+        admin_filter_details.visible = not admin_filter_details.visible
+
+    admin_filter_button = ft.IconButton(icon=ft.Icons.TUNE, width=48, height=48,
+        tooltip="Afficher ou masquer les filtres des articles", on_click=toggle_admin_filters)
     admin_view = ft.View(
         route="/articles",
-        padding=10,
+        padding=16,
         appbar=ft.AppBar(
-            title=ft.Text("Gérer les articles", weight=ft.FontWeight.W_600),
-            bgcolor=ft.Colors.BLUE_50,
+            title=ui.text("Gérer les articles", weight=ft.FontWeight.W_600),
+            bgcolor=ft.Colors.SURFACE_CONTAINER,
             actions=[
                 ft.TextButton(content="Ajouter", icon=ft.Icons.ADD, tooltip="Ajouter un article",
                               on_click=add_article_dialog),
@@ -1765,20 +2203,20 @@ def main(page: ft.Page):
         controls=[
             ft.SafeArea(expand=True, content=ft.Column(
                 [
-                    ft.Container(padding=ft.Padding.only(top=6), content=ft.Row([admin_catalogue])),
-                    ft.Container(padding=ft.Padding.only(top=6),
-                                 content=ft.Row([admin_search, admin_category])),
+                    ft.Row([admin_search, admin_filter_button], spacing=8),
+                    admin_filter_details,
                     ft.Row([admin_visibility]),
+                    admin_info,
                     admin_listview,
                 ],
-                expand=True,
+                expand=True, spacing=12,
             )),
         ],
     )
 
     # --- ÉCRAN « GÉRER LES CATALOGUES » ---
-    catalogues_listview = ft.ListView(expand=True, spacing=0)
-    catalogues_summary = ft.Text("", weight=ft.FontWeight.W_600)
+    catalogues_listview = ft.ListView(expand=True, spacing=12)
+    catalogues_summary = ui.text("", weight=ft.FontWeight.W_600)
 
     def save_catalogue_changes(updated):
         # Enregistrer avant de modifier l'écran : une erreur disque ne doit pas effacer les données en mémoire.
@@ -1802,8 +2240,7 @@ def main(page: ft.Page):
     def rename_catalogue_dialog(name):
         if name == DEFAULT_CATALOGUE or name not in managed_catalogues():
             return
-        name_field = ft.TextField(label="Nom du catalogue", value=name, autofocus=True)
-        error_text = ft.Text("", color=ft.Colors.RED, visible=False)
+        name_field = ui.field(label="Nom du catalogue", value=name, autofocus=True)
 
         def validate(e=None):
             new_name = norm_text(name_field.value or "")
@@ -1818,9 +2255,10 @@ def main(page: ft.Page):
             else:
                 message = None
             if message:
-                error_text.value, error_text.visible = message, True
+                name_field.error, name_field.error_max_lines = message, 3
                 refresh()
                 return
+            name_field.error = None
             if new_name != name:
                 snapshot = [{**item, "Catalogue": new_name if item["Catalogue"] == name else item["Catalogue"]}
                             for item in prefs.get("catalogue_items", excel_items)]
@@ -1843,10 +2281,11 @@ def main(page: ft.Page):
 
         name_field.on_submit = validate
         page.show_dialog(ft.AlertDialog(
-            modal=True, title=ft.Text("Renommer le catalogue"),
-            content=ft.Column([name_field, error_text], tight=True, width=400),
+            scrollable=True,
+            modal=True, title=ui.text("Renommer le catalogue"),
+            content=ft.Column([name_field], tight=True, width=dialog_width()),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                     ft.Button(content="Renommer", on_click=validate)],
+                     ui.button(content="Renommer", on_click=validate)],
         ))
 
     def remove_catalogue_dialog(name):
@@ -1870,14 +2309,15 @@ def main(page: ft.Page):
             refresh_catalogues()
 
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("Vider le catalogue principal ?" if is_main else "Supprimer le catalogue ?"),
-            content=ft.Text(f"Les {len(entries_in(name))} article(s) de « {label} » seront retirés, "
+            title=ui.text("Vider le catalogue principal ?" if is_main else "Supprimer le catalogue ?"),
+            content=ui.text(f"Les {len(entries_in(name))} article(s) de « {label} » seront retirés, "
                             "y compris les articles ajoutés manuellement.\n"
                             "Les commandes existantes sont conservées. Un nouvel import peut rétablir ces articles."),
             actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                     ft.Button(content="Vider" if is_main else "Supprimer", on_click=confirm,
-                               style=ft.ButtonStyle(bgcolor=ft.Colors.RED, color=ft.Colors.WHITE))],
+                     ui.button(content="Vider" if is_main else "Supprimer", on_click=confirm,
+                               style=ft.ButtonStyle(bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR))],
         ))
 
     def set_catalogue_visible(name, visible):
@@ -1908,27 +2348,31 @@ def main(page: ft.Page):
                            ft.PopupMenuItem(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE,
                                             on_click=lambda e, n=name: remove_catalogue_dialog(n)),
                        ])
-            catalogues_listview.controls.append(ft.ListTile(
-                title=ft.Text(label, weight=ft.FontWeight.W_500),
-                subtitle=ft.Text(f"{'Affiché' if visible else 'Masqué'} · {count} article(s)"),
-                trailing=ft.Row([
+            catalogues_listview.controls.append(ui.card(ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ui.PRIMARY),
+                    ui.text(label, weight=ft.FontWeight.W_600, expand=True),
+                ]),
+                ft.Row([
+                    ui.text(f"{'Affiché' if visible else 'Masqué'} · {count} article(s)",
+                            size=12, color=ui.MUTED, expand=True),
                     ft.Switch(value=visible, tooltip=f"Afficher « {label} »",
                               on_change=lambda e, n=name: set_catalogue_visible(n, e.control.value)),
                     ft.PopupMenuButton(icon=ft.Icons.MORE_VERT, tooltip=f"Options « {label} »", items=actions),
-                ], width=104, spacing=0),
-            ))
+                ], spacing=0),
+            ], spacing=8)))
 
     catalogues_view = ft.View(
         route="/catalogues",
-        padding=10,
-        appbar=ft.AppBar(title=ft.Text("Gérer les catalogues", weight=ft.FontWeight.W_600),
-                        bgcolor=ft.Colors.BLUE_50),
+        padding=16,
+        appbar=ft.AppBar(title=ui.text("Gérer les catalogues", weight=ft.FontWeight.W_600),
+                        bgcolor=ft.Colors.SURFACE_CONTAINER),
         controls=[ft.SafeArea(expand=True, content=ft.Column([
-            ft.Text("Affichez ou masquez les catalogues. Le menu ⋮ permet de les gérer. "
-                    "Les commandes existantes sont conservées.", color=ft.Colors.GREY_700),
+            ui.text("Affichez ou masquez les catalogues. Le menu ⋮ permet de les gérer. "
+                    "Les commandes existantes sont conservées.", color=ft.Colors.ON_SURFACE_VARIANT),
             catalogues_summary,
             catalogues_listview,
-        ], expand=True))],
+        ], expand=True, spacing=16))],
     )
 
     # =====================================================================
@@ -1952,8 +2396,9 @@ def main(page: ft.Page):
             items, skipped = install_catalogue(*picked)
         except Exception as err:  # fichier invalide, illisible, ou sélecteur indisponible
             page.show_dialog(ft.AlertDialog(
-                title=ft.Text("Import impossible"),
-                content=ft.Text(f"{err}\n\nLe catalogue actuel est conservé.", selectable=True),
+                scrollable=True,
+                title=ui.text("Import impossible"),
+                content=ui.text(f"{err}\n\nLe catalogue actuel est conservé.", selectable=True),
                 actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
             ))
             refresh()
@@ -1970,8 +2415,9 @@ def main(page: ft.Page):
         message = f"✅ Catalogue importé : {len(items)} article(s)."
         if skipped:
             page.show_dialog(ft.AlertDialog(
-                title=ft.Text("Catalogue importé"),
-                content=ft.Text(f"{len(items)} article(s) importé(s).\n\n{skipped_summary(skipped)}",
+                scrollable=True,
+                title=ui.text("Catalogue importé"),
+                content=ui.text(f"{len(items)} article(s) importé(s).\n\n{skipped_summary(skipped)}",
                                 selectable=True),
                 actions=[ft.TextButton(content="OK", on_click=lambda e: page.pop_dialog())],
             ))
@@ -1979,27 +2425,17 @@ def main(page: ft.Page):
             show_snack(message)
         refresh()
 
-    photos_tab = ft.Tab(label="📷 Photos")  # libellé mis à jour avec le nombre de photos
+    photos_tab = ft.NavigationBarDestination(label="Photos", icon=ft.Icons.PHOTO_LIBRARY_OUTLINED,
+                                             selected_icon=ft.Icons.PHOTO_LIBRARY)
     photos_grid = ft.GridView(
-        expand=True, max_extent=200, child_aspect_ratio=0.8,
-        spacing=10, run_spacing=10, padding=ft.Padding.only(top=4, bottom=12),
+        expand=True, max_extent=260, child_aspect_ratio=0.8,
+        spacing=12, run_spacing=12, padding=ft.Padding.only(top=4, bottom=12),
     )
-    photos_empty = ft.Container(
-        expand=True,
-        alignment=ft.Alignment.CENTER,
-        padding=24,
-        content=ft.Column(
-            [
-                ft.Icon(ft.Icons.PHOTO_CAMERA_OUTLINED, size=56, color=ft.Colors.BLUE_200),
-                ft.Text("Aucune photo pour cette commande", weight=ft.FontWeight.BOLD),
-                ft.Text("Photographiez le matériel à remplacer : étiquettes, numéros de série, "
-                        "branchements… puis donnez un nom à chaque photo.",
-                        text_align=ft.TextAlign.CENTER, color=ft.Colors.GREY_700, size=13),
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            tight=True, spacing=8,
-        ),
-    )
+    photos_empty = ft.ListView(expand=True, controls=[ui.empty(
+        ft.Icons.PHOTO_CAMERA_OUTLINED, "Aucune photo pour cette commande",
+        "Photographiez les étiquettes, numéros de série ou branchements du matériel à remplacer. "
+        "Donnez ensuite un nom à chaque photo.",
+    )])
 
     def order_photos(order=None):
         return (order or current_order()).setdefault("photos", [])
@@ -2048,7 +2484,7 @@ def main(page: ft.Page):
         photos_grid.controls.clear()
         for i, photo in enumerate(photos, 1):
             photos_grid.controls.append(ft.Container(
-                bgcolor=ft.Colors.GREY_100,
+                bgcolor=ft.Colors.SURFACE_CONTAINER,
                 border_radius=10,
                 padding=6,
                 ink=True,
@@ -2059,12 +2495,12 @@ def main(page: ft.Page):
                         ft.Image(
                             src=photo_src(order_id, photo),
                             fit=ft.BoxFit.COVER,
-                            height=150,
-                            cache_width=400,  # vignette : évite de décoder l'image en pleine taille
+                            expand=True,
+                            cache_width=dialog_width(),  # vignette : évite de décoder l'image en pleine taille
                             border_radius=8,
-                            error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.GREY_500),
+                            error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
                         ),
-                        ft.Text(f"{i}. {photo['label']}", size=12, weight=ft.FontWeight.W_500,
+                        ui.text(f"{i}. {photo['label']}", size=12, weight=ft.FontWeight.W_500,
                                 max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                     ],
                     spacing=6,
@@ -2076,12 +2512,12 @@ def main(page: ft.Page):
         photos_empty.visible = not has_photos
         share_photos_btn.disabled = not has_photos
         zip_photos_btn.disabled = not has_photos
-        photos_tab.label = f"📷 Photos ({len(photos)})" if has_photos else "📷 Photos"
+        photos_tab.label = f"Photos ({len(photos)})" if has_photos else "Photos"
 
     def ask_photo_label(order_id, photo, title, on_done=None, image_src=None, modal=True):
         """Boîte « nommer la photo » : aperçu, libellé, Supprimer / Enregistrer.
         modal=False : un appui à côté ferme la boîte (simple consultation)."""
-        label_field = ft.TextField(
+        label_field = ui.field(
             value=photo["label"],
             label="Nom de la photo",
             hint_text="ex. Ancien serveur – étiquette",
@@ -2113,23 +2549,24 @@ def main(page: ft.Page):
         label_field.on_submit = save
         added = datetime.fromisoformat(photo["added"]).strftime("%d/%m/%Y à %H:%M")
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=modal,
-            title=ft.Text(title),
+            title=ui.text(title),
             content=ft.Column(
                 [
                     ft.Image(src=image_src or photo_src(order_id, photo), fit=ft.BoxFit.CONTAIN,
                              height=260, cache_width=1080, border_radius=8),
                     label_field,
-                    ft.Text(f"Prise le {added}", size=11, color=ft.Colors.GREY_600),
+                    ui.text(f"Prise le {added}", size=11, color=ft.Colors.ON_SURFACE_VARIANT),
                 ],
-                tight=True, spacing=10, width=420,
+                tight=True, spacing=10, width=dialog_width(),
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
             actions_alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             actions=[
                 ft.TextButton(content="Supprimer", icon=ft.Icons.DELETE_OUTLINE, on_click=remove,
-                              style=ft.ButtonStyle(color=ft.Colors.RED)),
-                ft.Button(content="Enregistrer", on_click=save),
+                              style=ft.ButtonStyle(color=ft.Colors.ERROR)),
+                ui.button(content="Enregistrer", on_click=save),
             ],
         ))
 
@@ -2242,7 +2679,7 @@ def main(page: ft.Page):
         refresh()
 
     # --- Appareil photo intégré (Android) ---
-    camera_count = ft.Text("", color=ft.Colors.WHITE, size=13, width=90)
+    camera_count = ui.text("", color=ft.Colors.WHITE, size=13, width=90)
 
     def update_camera_count():
         n = len(order_photos()) if state["current"] else 0
@@ -2257,7 +2694,7 @@ def main(page: ft.Page):
             bgcolor=ft.Colors.BLACK,
             padding=0,
             appbar=ft.AppBar(
-                title=ft.Text(current_order()["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                title=ui.text(current_order()["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 bgcolor=ft.Colors.BLACK,
                 color=ft.Colors.WHITE,
                 actions=[ft.TextButton(content="Terminé", on_click=close_camera,
@@ -2273,7 +2710,7 @@ def main(page: ft.Page):
                                 camera_count,
                                 ft.IconButton(
                                     icon=ft.Icons.CAMERA, icon_size=40, icon_color=ft.Colors.WHITE,
-                                    bgcolor=ft.Colors.BLUE, width=76, height=76,
+                                    bgcolor=ft.Colors.PRIMARY, width=76, height=76,
                                     tooltip="Prendre la photo", on_click=take_photo,
                                 ),
                                 ft.Container(width=90),
@@ -2336,8 +2773,86 @@ def main(page: ft.Page):
         await close_drawer()
         await page.push_route("/catalogues")
 
+    backup_status = ui.text("", color=ui.MUTED, selectable=True)
+    backup_progress = ft.ProgressRing(visible=False, width=24, height=24)
+
+    async def export_backup(e=None, recovery=False):
+        export_backup_btn.disabled = restore_backup_btn.disabled = recovery_backup_btn.disabled = True
+        backup_progress.visible = True
+        backup_status.value = "Préparation de la sauvegarde…"
+        refresh()
+        try:
+            if recovery:
+                path = max((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"),
+                           key=lambda path: path.stat().st_mtime_ns)
+                if not path.resolve().is_relative_to(storage_dir().resolve()):
+                    raise ValueError("La copie de secours est située hors du stockage de l'application.")
+                data = await asyncio.to_thread(path.read_bytes)
+            else:
+                save_orders(orders, state["current"])
+                save_prefs(prefs)
+                data = await asyncio.to_thread(backup.create_backup, storage_dir())
+            chosen = await file_picker.save_file(dialog_title="Enregistrer la sauvegarde complète",
+                file_name=path.name if recovery else f"Prise de Commande - {datetime.now():%Y-%m-%d-%H%M}.zip",
+                file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["zip"], src_bytes=data)
+            if chosen and not is_mobile and not page.web:
+                target = Path(chosen)
+                if target.suffix.lower() != ".zip":
+                    target = target.with_suffix(".zip")
+                await asyncio.to_thread(target.write_bytes, data)
+            backup_status.value = "Sauvegarde enregistrée." if chosen else "Enregistrement annulé."
+        except Exception as err:
+            backup_status.value = f"Sauvegarde impossible : {err}"
+        finally:
+            export_backup_btn.disabled = restore_backup_btn.disabled = False
+            recovery_backup_btn.disabled = not any((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip"))
+            backup_progress.visible = False
+            refresh()
+
+    async def restore_from_view(e=None):
+        async def done():
+            await page.push_route("/")
+            page.controls.clear()
+            main(page)
+        await request_restore(page, file_picker, done)
+
+    async def export_recovery(e=None):
+        await export_backup(recovery=True)
+
+    export_backup_btn = ui.button(content="Créer une sauvegarde", icon=ft.Icons.SAVE_ALT, on_click=export_backup)
+    restore_backup_btn = ft.OutlinedButton(content="Restaurer une sauvegarde", icon=ft.Icons.RESTORE,
+                                            on_click=restore_from_view)
+    recovery_backup_btn = ft.TextButton(content="Exporter la dernière copie de secours", icon=ft.Icons.HISTORY,
+        on_click=export_recovery, disabled=not any((storage_dir() / "sauvegardes").glob("avant-restauration-*.zip")))
+    backup_view = ft.View(route="/sauvegarde", padding=16,
+        appbar=ft.AppBar(title=ui.text("Sauvegarde et restauration")),
+        controls=[ft.SafeArea(expand=True, content=ft.ListView(spacing=16, controls=[
+            ui.card(ft.Column([
+                ui.heading("Tout conserver", "Un fichier ZIP à garder à l'endroit de votre choix", ft.Icons.BACKUP_OUTLINED),
+                ui.text("Commandes actives et archives, photos, remarques, catalogue, prix, favoris et réglages. "
+                        "Aucun envoi automatique : vous choisissez où enregistrer le fichier.", color=ui.MUTED),
+                export_backup_btn,
+            ], spacing=16, tight=True)),
+            ui.card(ft.Column([
+                ui.heading("Retrouver vos données", icon=ft.Icons.RESTORE),
+                ui.text("La restauration ajoute les commandes et remplace le catalogue et les réglages. "
+                        "Les commandes déjà présentes sont conservées. Une copie locale de secours est créée "
+                        "dans le dossier « sauvegardes » de l'application.", color=ui.MUTED),
+                restore_backup_btn,
+                recovery_backup_btn,
+            ], spacing=16, tight=True)),
+            backup_progress, backup_status,
+        ]))])
+
+    async def open_backup_view(e=None):
+        await close_drawer()
+        await page.push_route("/sauvegarde")
+
     async def route_change(e=None):
-        if page.route == "/articles":
+        if page.route == "/sauvegarde":
+            if len(page.views) == 1:
+                page.views.append(backup_view)
+        elif page.route == "/articles":
             if len(page.views) == 1:
                 admin_catalogue.value = catalogue_dropdown.value
                 render_admin()
@@ -2370,155 +2885,248 @@ def main(page: ft.Page):
     page.on_route_change = route_change
     page.on_view_pop = view_pop
 
-    # --- CONSTRUCTION DE L'INTERFACE ---
+    # --- ADAPTIVE WORKSPACE: keep controls alive while changing their parents ---
+    state["filters_open"] = False
 
-    content_catalogue = ft.Column(
-        [
-            ft.Container(padding=ft.Padding.only(top=6), content=ft.Row([catalogue_dropdown])),
-            # marge en haut : l'étiquette « Catégorie » n'est plus coupée sous les onglets
-            ft.Container(padding=ft.Padding.only(top=6),
-                         content=ft.Row([search_input, category_dropdown])),
-            catalogue_listview,
-        ],
-        expand=True,
+    def toggle_filters(e=None):
+        state["filters_open"] = not state["filters_open"]
+        apply_filter_layout()
+
+    filter_button = ft.IconButton(
+        icon=ft.Icons.TUNE, tooltip="Afficher ou masquer les filtres",
+        width=48, height=48, on_click=toggle_filters,
     )
-
-    content_panier = ft.Column(
-        [
-            cart_listview,
-            ft.Divider(),
-            total_text,
-            ft.Row([
-                ft.Button(
-                    content="Copier pour la Compta",
-                    icon=ft.Icons.COPY,
-                    on_click=copy_email_text,
-                    style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
-                    expand=True,
-                ),
-            ]),
-            ft.Row([
-                ft.OutlinedButton(
-                    content="Vider le panier",
-                    icon=ft.Icons.DELETE,
-                    on_click=clear_cart,
-                    style=ft.ButtonStyle(color=ft.Colors.RED),
-                    expand=True,
-                ),
-            ]),
-        ],
-        expand=True,
+    filter_details = ft.ResponsiveRow(
+        [catalogue_dropdown, category_dropdown], spacing=12, run_spacing=12,
+        breakpoints={"xs": 0, "sm": 600},
     )
+    catalogue_dropdown.col = 12
+    category_dropdown.col = 12
+    search_input.expand = True
+    filter_search_row = ft.Row([search_input, filter_button], spacing=8)
+    catalogue_heading = ui.heading("Catalogue", "Trouvez le bon matériel", ft.Icons.INVENTORY_2_OUTLINED)
+    browse_row = ft.Row([browse_mode])
+    content_catalogue = ft.Column([
+        catalogue_heading,
+        filter_search_row,
+        browse_row,
+        filter_details,
+        filter_tags,
+        catalogue_info,
+        catalogue_listview,
+    ], expand=True, spacing=8)
 
-    take_photo_btn = ft.Button(
+    copy_order_btn = ui.button(
+        content="Copier pour la Compta", icon=ft.Icons.COPY,
+        on_click=copy_email_text, expand=True,
+    )
+    clear_order_btn = ft.IconButton(
+        icon=ft.Icons.DELETE_OUTLINE, tooltip="Vider le panier", width=48, height=48,
+        on_click=clear_cart, icon_color=ft.Colors.ERROR,
+    )
+    basket_footer = ui.card(ft.Column([
+        ui.text("Total de la commande", size=13, color=ui.MUTED),
+        total_text,
+        ft.Row([copy_order_btn, clear_order_btn], spacing=8),
+    ], spacing=12))
+    notes_preview = ui.text("", size=12, color=ui.MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, visible=False)
+    basket_heading = ui.heading("Votre panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED,
+        trailing=ft.IconButton(icon=ft.Icons.NOTES, tooltip="Remarques de la commande", width=48, height=48,
+                               on_click=edit_notes))
+    content_panier = ft.Column([
+        basket_heading, cart_info, notes_preview, cart_listview, basket_footer,
+    ], expand=True, spacing=12)
+
+    take_photo_btn = ui.button(
         content="Prendre une photo", icon=ft.Icons.PHOTO_CAMERA, on_click=open_camera,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
         expand=True, visible=camera_available,
     )
     import_photos_btn = ft.OutlinedButton(
         content="Importer" if camera_available else "Importer des photos",
         icon=ft.Icons.PHOTO_LIBRARY_OUTLINED, on_click=import_photos, expand=True,
     )
-    share_photos_btn = ft.Button(
+    share_photos_btn = ui.button(
         content="Partager les photos", icon=ft.Icons.SHARE, on_click=share_photos,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
         expand=True, visible=is_mobile and not page.web,
     )
     zip_photos_btn = ft.OutlinedButton(
         content="Enregistrer en ZIP", icon=ft.Icons.FOLDER_ZIP_OUTLINED, on_click=save_photos_zip,
         expand=True,
     )
-    content_photos = ft.Column(
-        [
-            ft.Container(padding=ft.Padding.only(top=8),
-                         content=ft.Row([take_photo_btn, import_photos_btn])),
-            photos_empty,
-            photos_grid,
-            ft.Divider(height=1),
-            ft.Row([share_photos_btn]),
-            ft.Row([zip_photos_btn]),
+    photo_actions = ft.Column([
+        ft.Row([take_photo_btn]), ft.Row([import_photos_btn]),
+    ], spacing=8)
+    photo_heading = ui.heading("Photos", "Documentez le matériel à remplacer", ft.Icons.PHOTO_LIBRARY_OUTLINED)
+    content_photos = ft.Column([
+        photo_heading, photo_actions, photos_empty, photos_grid,
+        ft.Row([share_photos_btn]), ft.Row([zip_photos_btn]),
+    ], expand=True, spacing=12)
+
+    cart_tab = ft.NavigationBarDestination(
+        label="Panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED, selected_icon=ft.Icons.SHOPPING_BAG,
+    )
+    navigation = ft.NavigationBar(
+        destinations=[
+            ft.NavigationBarDestination(label="Catalogue", icon=ft.Icons.INVENTORY_2_OUTLINED,
+                                        selected_icon=ft.Icons.INVENTORY_2),
+            cart_tab, photos_tab,
         ],
-        expand=True,
+        selected_index=0, on_change=lambda e: go_to_tab(e.control.selected_index),
     )
+    main_host = ft.Container(expand=True)
+    detail_host = ft.Container(expand=True, visible=False)
+    # The central gutter keeps controls away from the typical inner display crease.
+    # Flet 1.0.4 does not expose Android display-feature / hinge geometry.
+    pane_row = ft.Row([main_host, detail_host], expand=True, spacing=24,
+                      vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+    pane_frame = ft.Container(content=pane_row, width=1440)
+    pane_area = ft.Container(content=ft.Row([pane_frame], expand=True,
+        alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+        expand=True, padding=12)
+    compact_cart_btn = ft.TextButton(content="Voir le panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED,
+        tooltip="Voir le panier",
+        on_click=lambda e: go_to_tab(1), expand=True,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY_CONTAINER, color=ft.Colors.ON_PRIMARY_CONTAINER,
+                             padding=ft.Padding.symmetric(horizontal=12, vertical=14)))
+    quick_cart = ft.Container(content=ft.Row([compact_cart_btn]),
+        padding=ft.Padding.only(left=12, right=12, bottom=8), visible=False)
 
-    # Flet 1.0 : Tabs = état partagé, TabBar = en-têtes, TabBarView = contenus
-    cart_tab = ft.Tab(label="🛍️ Panier")  # libellé mis à jour avec le nombre d'articles
-    tabs = ft.Tabs(
-        length=3,
-        selected_index=0,
-        animation_duration=ft.Duration(milliseconds=300),
-        expand=True,
-        content=ft.Column(
-            expand=True,
-            controls=[
-                ft.TabBar(tabs=[
-                    ft.Tab(label="📦 Catalogue"),
-                    cart_tab,
-                    photos_tab,
-                ]),
-                ft.TabBarView(
-                    expand=True,
-                    controls=[content_catalogue, content_panier, content_photos],
-                ),
-            ],
-        ),
+    async def restore_current_order(e=None):
+        await archive_order(state["current"])
+
+    archive_banner = ft.Container(content=ft.Row([
+        ui.text("Commande archivée", expand=True),
+        ft.TextButton(content="Réactiver", on_click=restore_current_order),
+    ]), padding=8, bgcolor=ft.Colors.PRIMARY_CONTAINER, visible=False)
+    workspace = ft.Column([archive_banner, pane_area, quick_cart, navigation], spacing=0, expand=True)
+
+    def apply_filter_layout():
+        layout = window["layout"]
+        narrow = layout.width < 600 or layout.dual_pane
+        filter_details.visible = state["filters_open"] if narrow or layout.short else True
+        filter_button.visible = narrow or layout.short
+        browse_row.visible = not layout.short or state["filters_open"]
+        catalogue_info.visible = not layout.short
+        filter_button.bgcolor = ft.Colors.PRIMARY_CONTAINER if state["filters_open"] else None
+        catalogue_dropdown.col = category_dropdown.col = 12 if narrow else 6
+        for heading in [catalogue_heading, basket_heading, photo_heading]:
+            heading.visible = not layout.short
+
+    def apply_catalogue_columns():
+        layout = window["layout"]
+        available = min(1440 if layout.dual_pane else 780, layout.width - 2 * layout.margin)
+        pane_width = ((available - 24) * (0.5 if layout.width < 1200 else 6 / 11)
+                      if layout.dual_pane else available)
+        # Flet ResponsiveRow breakpoints use the view width, so use explicit
+        # spans based on this pane's width for master/detail catalogue cards.
+        for grid in catalogue_grids:
+            columns = 2 if pane_width >= 680 else 1
+            for i, card in enumerate(grid.controls):
+                # Give an odd final article the full row instead of leaving
+                # half a grid row empty. Its controls then fit on one line.
+                full_width = columns == 1 or (len(grid.controls) % 2 and i == len(grid.controls) - 1)
+                card.col = 12 if full_width else 6
+                card_width = pane_width if full_width else (pane_width - 8) / 2
+                compact, wide = catalogue_rows[id(card)]
+                card.content = wide if card_width >= 380 else compact
+
+    def layout_workspace():
+        layout = window["layout"]
+        apply_filter_layout()
+        apply_catalogue_columns()
+        # In a short landscape/keyboard window, let the summary scroll with
+        # the lines instead of consuming all of the basket's usable height.
+        if layout.short:
+            if basket_footer in content_panier.controls:
+                content_panier.controls.remove(basket_footer)
+            if basket_footer not in cart_listview.controls:
+                cart_listview.controls.append(basket_footer)
+        else:
+            if basket_footer in cart_listview.controls:
+                cart_listview.controls.remove(basket_footer)
+            if basket_footer not in content_panier.controls:
+                content_panier.controls.append(basket_footer)
+        index = state["tab"]
+        dual = layout.dual_pane
+        # Reparent only at a layout/navigation boundary, never on every resize pixel.
+        signature = (dual, index)
+        if state.get("layout_signature") != signature:
+            main_host.content = None
+            detail_host.content = None
+            main_host.content = content_photos if index == 2 else content_catalogue if dual or index == 0 else content_panier
+            if dual:
+                detail_host.content = content_panier
+            detail_host.visible = dual
+            state["layout_signature"] = signature
+        pane_area.padding = layout.margin
+        pane_frame.width = min(1440 if dual else 780, max(0, layout.width - 2 * layout.margin))
+        drawer.width = min(360, max(240, layout.width - 24))
+        # Limit line lengths on large desktops; balanced panes on inner displays.
+        main_host.expand = (1 if layout.width < 1200 else 6) if dual else True
+        detail_host.expand = 1 if layout.width < 1200 else 5
+        navigation.visible = not (layout.short and state.get("keyboard_open", False))
+        quick_cart.visible = bool(state["current"] and order_count(current_order()) and not dual
+                                  and not layout.short and state["tab"] == 0)
+
+    async def on_workspace_size(e):
+        window["layout"] = ui.WindowLayout(e.width, e.height)
+        layout_workspace()
+        refresh()
+
+    async def on_window_resize(e=None):
+        # SafeArea's measured workspace is the source of truth. This fallback
+        # updates immediately when the host reports a new window size.
+        window["layout"] = ui.WindowLayout(
+            getattr(page, "width", None) or window["layout"].width,
+            max(0, (getattr(page, "height", None) or window["layout"].height) - 64),
+        )
+        layout_workspace()
+        apply_admin_density()
+        admin_narrow = window["layout"].width < 600
+        admin_catalogue.col = admin_category.col = 12 if admin_narrow else 6
+        refresh()
+
+    async def on_media_change(e=None):
+        media = getattr(page, "media", None)
+        state["keyboard_open"] = bool(media and (media.view_insets.bottom or 0) > 0)
+        layout_workspace()
+        refresh()
+
+    page.on_resize = on_window_resize
+    page.on_media_change = on_media_change
+
+    def toggle_theme(e=None):
+        dark = page.theme_mode == ft.ThemeMode.DARK or (
+            page.theme_mode == ft.ThemeMode.SYSTEM
+            and getattr(page, "platform_brightness", None) == ft.Brightness.DARK
+        )
+        page.theme_mode = ft.ThemeMode.LIGHT if dark else ft.ThemeMode.DARK
+        theme_button.icon = ft.Icons.DARK_MODE_OUTLINED if dark else ft.Icons.LIGHT_MODE_OUTLINED
+
+    theme_button = ft.IconButton(
+        icon=ft.Icons.CONTRAST, tooltip="Changer le thème clair / sombre",
+        width=48, height=48, on_click=toggle_theme,
     )
-
-    # Barre du haut : ☰ ouvre le menu latéral, titre = commande active, ✎ = nouvelle commande
     page.appbar = ft.AppBar(
-        leading=ft.IconButton(icon=ft.Icons.MENU, tooltip="Commandes", on_click=open_drawer),
-        title=appbar_title,
-        bgcolor=ft.Colors.BLUE_50,
-        actions=[
-            ft.IconButton(icon=ft.Icons.EDIT_SQUARE, tooltip="Nouvelle commande",
-                          on_click=create_order_dialog),
-        ],
+        leading=ft.IconButton(icon=ft.Icons.MENU, tooltip="Commandes", on_click=open_drawer,
+                              width=48, height=48),
+        title=ft.Column([appbar_title, order_info], spacing=2, tight=True),
+        actions=[theme_button, ft.IconButton(
+            icon=ft.Icons.ADD, tooltip="Nouvelle commande", width=48, height=48,
+            on_click=create_order_dialog,
+        )],
     )
     page.drawer = drawer
 
-    # Écran d'aide affiché tant qu'aucune commande n'existe
-    empty_state = ft.Container(
-        expand=True,
-        alignment=ft.Alignment.CENTER,
-        padding=24,
-        content=ft.Column(
-            [
-                ft.Icon(ft.Icons.RECEIPT_LONG, size=72, color=ft.Colors.BLUE_200),
-                ft.Text("Aucune commande", size=22, weight=ft.FontWeight.BOLD),
-                ft.Text(
-                    "Créez une commande et donnez-lui un nom (client, cabinet, salle…) "
-                    "pour commencer à y ajouter des articles du catalogue.",
-                    text_align=ft.TextAlign.CENTER,
-                    color=ft.Colors.GREY_700,
-                ),
-                ft.Container(height=8),
-                ft.Button(
-                    content="Créer une commande",
-                    icon=ft.Icons.ADD,
-                    on_click=create_order_dialog,
-                    style=ft.ButtonStyle(
-                        bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE,
-                        padding=ft.Padding.symmetric(horizontal=24, vertical=16),
-                    ),
-                ),
-                ft.Text(
-                    "Vos commandes seront ensuite accessibles avec le menu ☰ en haut à gauche.",
-                    size=12, italic=True, text_align=ft.TextAlign.CENTER,
-                    color=ft.Colors.GREY_600,
-                ),
-            ],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=12,
-            tight=True,
-        ),
-    )
-
-    # Zone principale : affiche soit les onglets, soit l'écran d'aide (voir render_all)
-    body = ft.Container(expand=True, content=tabs)
-
-    # SafeArea : évite que l'interface passe sous les bords arrondis / encoches du téléphone
-    page.add(ft.SafeArea(expand=True, content=body))
+    empty_state = ft.ListView(expand=True, controls=[ui.empty(
+        ft.Icons.RECEIPT_LONG, "Votre prochaine commande commence ici",
+        "Un client, une salle, un projet. Créez une commande, choisissez votre matériel "
+        "et retrouvez tous vos éléments au même endroit.",
+        ui.button(content="Créer une commande", icon=ft.Icons.ADD, on_click=create_order_dialog),
+    )], padding=24)
+    body = ft.Container(expand=True, content=workspace, on_size_change=on_workspace_size,
+                        size_change_interval=100)
+    page.add(ft.SafeArea(expand=True, content=body, maintain_bottom_view_padding=True))
     render_catalogue()
     render_all()
 
@@ -2531,10 +3139,11 @@ def main(page: ft.Page):
 
     if startup_warnings:
         page.show_dialog(ft.AlertDialog(
+            scrollable=True,
             modal=True,
-            title=ft.Text("⚠️ Attention"),
-            content=ft.Text("\n\n".join(startup_warnings)),
-            actions=[ft.Button(content="OK", on_click=lambda e: page.pop_dialog())],
+            title=ui.text("Attention"),
+            content=ui.text("\n\n".join(startup_warnings)),
+            actions=[ui.button(content="OK", on_click=lambda e: page.pop_dialog())],
         ))
 
 

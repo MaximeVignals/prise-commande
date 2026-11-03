@@ -11,7 +11,8 @@
 #>
 param(
     [ValidateSet('tous', 'apk', 'windows')]
-    [string]$Cible = 'tous'
+    [string]$Cible = 'tous',
+    [switch]$SansOuvrir
 )
 $ErrorActionPreference = 'Stop'
 
@@ -83,4 +84,4 @@ finally {
     Pop-Location
 }
 if ($echec) { exit 1 }
-explorer $Releases
+if (-not $SansOuvrir) { explorer $Releases }

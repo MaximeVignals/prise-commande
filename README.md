@@ -14,8 +14,23 @@ The interface is in French: it was built for field sales work in France.
 - **Photos per order.** Take photos of the equipment to replace with the in-app camera (Android, via `flet-camera`) or import them; label them, share them, or export everything as a ZIP.
 - **Email text.** Copy a ready-to-send summary of the order to the clipboard.
 - **Manage items.** Hide items, change prices or add your own items without touching the Excel file.
+- **Faster browsing.** Star favorite articles, revisit the last 20 distinct articles added, search all visible catalogues, and clear active filters from chips. Cards show quantities already ordered.
+- **Order history.** Duplicate orders with independent photos or archive and reactivate them from the order menu.
+- **Notes.** Add remarks to an order or individual basket lines; they are included in the accounting text and photo ZIP summary.
+- **Complete backups.** Open ☰ › **Sauvegarder / restaurer** to export orders, photos, catalogue and preferences together. Restore validates the archive, preserves existing orders and creates a recovery copy that can also be exported. Catalogue and settings are replaced; colliding order IDs become new copies.
 
 Everything stays on the device: orders, photos and settings are saved in the app's private storage. There is no server and no account.
+
+## Adaptive interface
+
+The Material 3 interface follows the system light/dark theme, with a toolbar theme
+switch. Narrow windows use bottom navigation; unfolded and larger windows show
+the catalogue or photos beside the live basket. Filters, grids and short landscape
+windows adapt to the available space without resetting entered quantities.
+
+For a preview with isolated sample data, run `python scripts/preview_ui.py`.
+Add `--capture` to generate the responsive screenshot matrix. Design decisions,
+validation and native-device checks are documented in [UI_REDESIGN.md](UI_REDESIGN.md).
 
 ## Try it
 
@@ -41,7 +56,9 @@ python -m unittest discover -s tests -v
 ```
 
 The tests use the sample catalogue and isolated temporary storage under `storage/tests/`.
-They cover catalogue imports, catalogue switching and visibility, prices, saved orders and preferences, migration, and web photo import/export.
+The 85 tests cover catalogue imports and visibility, prices, persistence, migration,
+photos, adaptive layouts, favorites/recents, notes, order duplication/archiving,
+backup validation and rollback, restore UI flows, and web downloads.
 
 ## Build
 

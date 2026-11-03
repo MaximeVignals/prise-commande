@@ -295,11 +295,13 @@ class FilePickerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPage:
-    def __init__(self, web=True, platform=ft.PagePlatform.WINDOWS):
+    def __init__(self, web=True, platform=ft.PagePlatform.WINDOWS, width=390, height=800):
         self.web = web
         self.platform = platform
+        self.width, self.height = width, height
         self.controls = []
         self.dialogs = []
+        self.appbar = self.drawer = None
         self.views = [ft.View(route="/")]
         self.route = "/"
 
@@ -313,7 +315,17 @@ class TestPage:
         self.dialogs.append(dialog)
 
     def pop_dialog(self):
-        return self.dialogs.pop()
+        dialog = self.dialogs.pop()
+        if dialog.on_dismiss:
+            result = dialog.on_dismiss(SimpleNamespace(control=dialog))
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(result)
+                else:
+                    loop.create_task(result)
+        return dialog
 
     async def close_drawer(self):
         pass
@@ -321,6 +333,11 @@ class TestPage:
     async def push_route(self, route):
         self.route = route
         await self.on_route_change()
+
+    def select_tab(self, index):
+        navigation = self.find(ft.NavigationBar)
+        navigation.selected_index = index
+        navigation.on_change(SimpleNamespace(control=navigation))
 
     def find(self, control_type, **attributes):
         pending = [self.controls, self.dialogs, self.appbar, self.drawer, self.views]
@@ -632,7 +649,8 @@ class CatalogueBrowsingTests(StorageTest):
         asyncio.run(self.page.push_route("/articles"))
         self.assertEqual(self.page.find(ft.Dropdown, label="Catalogue").value, "Tarif matériel")
         self.select_catalogue("Réserve")
-        self.assertEqual(self.page.find(ft.SegmentedButton).segments[0].label, "Tous 1")
+        self.assertEqual(self.page.find(ft.SegmentedButton).segments[0].label, "Tous")
+        self.page.find(ft.Text, value="0 articles affichés sur 1 · prix enregistrés automatiquement")
         self.page.find(ft.TextButton, content="Ajouter").on_click(None)
         self.page.find(ft.TextField, label="Nom de l'article").value = "Ajouté"
         self.page.find(ft.TextField, label="Prix unitaire").value = "7"
@@ -654,6 +672,95 @@ class CatalogueBrowsingTests(StorageTest):
         self.page.find(ft.Text, value="Exemple")
 
 
+class AdaptiveWorkspaceTests(StorageTest):
+    def setUp(self):
+        super().setUp()
+        app.install_catalogue(app.sample_catalogue_path().read_bytes(), ".xlsx")
+        app.save_orders({"demo": {"name": "Démo", "created": "2026-11-03T12:00",
+                                  "items": {}, "photos": []}}, "demo")
+        self.page = TestPage()
+        app.main(self.page)
+
+    def resize(self, width, height):
+        self.page.width, self.page.height = width, height
+        asyncio.run(self.page.on_resize())
+        body = self.page.controls[0].content
+        asyncio.run(body.on_size_change(SimpleNamespace(width=width, height=height - 64)))
+
+    def test_window_classes_and_short_windows(self):
+        for width, expected in [(280, "compact"), (599, "compact"), (600, "medium"),
+                                (839, "medium"), (840, "expanded"), (1600, "expanded")]:
+            self.assertEqual(app.ui.WindowLayout(width, 800).size_class, expected)
+        self.assertFalse(app.ui.WindowLayout(900, 440).dual_pane)
+        self.assertTrue(app.ui.WindowLayout(900, 800).dual_pane)
+
+    def test_quantity_and_search_survive_repeated_fold_and_resize(self):
+        item = app.load_catalogue()[0]
+        tooltip = f"Quantité à ajouter : {item['Nom_Article']}"
+        quantity = self.page.find(ft.TextField, tooltip=tooltip)
+        quantity.value = "7"
+        quantity.on_change(SimpleNamespace(control=quantity))
+        search = self.page.find(ft.TextField, label="Rechercher")
+        search.value = "écran"
+        for width, height in [(320, 850), (900, 950), (600, 750), (850, 440), (390, 900)]:
+            self.resize(width, height)
+            self.assertIs(self.page.find(ft.TextField, tooltip=tooltip), quantity)
+            self.assertEqual(quantity.value, "7")
+            self.assertIs(self.page.find(ft.TextField, label="Rechercher"), search)
+            self.assertEqual(search.value, "écran")
+        quantity.on_submit(None)
+        self.assertEqual(app.load_orders()[0]["demo"]["items"][item["Cle"]]["quantite"], 7)
+
+    def test_photo_navigation_and_actions_survive_fold(self):
+        self.page.select_tab(2)
+        navigation = self.page.find(ft.NavigationBar)
+        photo_import = self.page.find(ft.OutlinedButton, content="Importer des photos")
+        for width in [900, 320, 1200, 390]:
+            self.resize(width, 900)
+            self.assertEqual(navigation.selected_index, 2)
+            self.assertIs(self.page.find(ft.OutlinedButton, content="Importer des photos"), photo_import)
+        self.assertEqual(app.load_orders()[0]["demo"]["items"], {})
+
+    def test_basket_edit_and_undo_still_work_after_resize(self):
+        item = app.load_catalogue()[0]
+        self.page.find(ft.IconButton, tooltip=f"Ajouter au panier : {item['Nom_Article']}").on_click(None)
+        self.page.select_tab(1)
+        quantity = self.page.find(ft.TextField, tooltip="Quantité")
+        quantity.value = "12"
+        quantity.on_change(None)
+        self.resize(1000, 900)
+        self.assertIs(self.page.find(ft.TextField, tooltip="Quantité"), quantity)
+        self.assertEqual(app.load_orders()[0]["demo"]["items"][item["Cle"]]["quantite"], 12)
+        self.page.find(ft.IconButton, tooltip="Retirer du panier").on_click(None)
+        snack = self.page.find(ft.SnackBar, action="Annuler")
+        snack.on_action(None)
+        self.assertEqual(app.load_orders()[0]["demo"]["items"][item["Cle"]]["quantite"], 12)
+
+    def test_filter_changes_restore_quantity_draft(self):
+        item = app.load_catalogue()[0]
+        tooltip = f"Quantité à ajouter : {item['Nom_Article']}"
+        quantity = self.page.find(ft.TextField, tooltip=tooltip)
+        quantity.value = "9"
+        quantity.on_change(SimpleNamespace(control=quantity))
+        with patch.object(ft.ListView, "scroll_to", new_callable=AsyncMock):
+            search = self.page.find(ft.TextField, label="Rechercher")
+            search.value = "no matching article"
+            asyncio.run(search.on_change())
+            search.value = ""
+            asyncio.run(search.on_change())
+        self.assertEqual(self.page.find(ft.TextField, tooltip=tooltip).value, "9")
+
+    def test_system_theme_and_toggle_preserve_order(self):
+        self.assertEqual(self.page.theme_mode, ft.ThemeMode.SYSTEM)
+        before = app.load_orders()
+        toggle = self.page.find(ft.IconButton, tooltip="Changer le thème clair / sombre")
+        toggle.on_click(None)
+        self.assertEqual(self.page.theme_mode, ft.ThemeMode.DARK)
+        toggle.on_click(None)
+        self.assertEqual(self.page.theme_mode, ft.ThemeMode.LIGHT)
+        self.assertEqual(app.load_orders(), before)
+
+
 class WebPhotoTests(StorageTest):
     def setUp(self):
         super().setUp()
@@ -664,6 +771,7 @@ class WebPhotoTests(StorageTest):
         app.main(self.page)
 
     def import_photo(self):
+        self.page.select_tab(2)
         picked = SimpleNamespace(name="example.png", path=None, bytes=b"fake image")
         with patch.object(ft.FilePicker, "pick_files", new_callable=AsyncMock, return_value=[picked]) as picker:
             asyncio.run(self.page.find(ft.OutlinedButton, content="Importer des photos").on_click())
@@ -689,6 +797,7 @@ class WebPhotoTests(StorageTest):
         page = TestPage(platform=ft.PagePlatform.ANDROID)
         with patch.object(app, "fc", SimpleNamespace()):
             app.main(page)
+        page.select_tab(2)
         self.assertFalse(page.find(ft.Button, content="Prendre une photo").visible)
         self.assertFalse(page.find(ft.Button, content="Partager les photos").visible)
         self.assertTrue(page.find(ft.OutlinedButton, content="Importer des photos").visible)
