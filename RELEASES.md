@@ -11,3 +11,5 @@
 - Document the import format and catalogue management behavior.
 
 Validation: 50 automated tests pass; catalogue selectors, management controls and the rename dialog checked at 390 px width.
+
+- 2026-11-03 — 1.5.0 (build 6), APK only, branch ui-testing: modernized adaptive UI and order productivity tools.
