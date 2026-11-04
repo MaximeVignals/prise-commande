@@ -12,7 +12,9 @@
 param(
     [ValidateSet('tous', 'apk', 'windows')]
     [string]$Cible = 'tous',
-    [switch]$SansOuvrir
+    [switch]$SansOuvrir,
+    # APK réduit pour les téléphones récents (arm64 seulement) : environ 2 fois plus léger
+    [switch]$Telephone
 )
 $ErrorActionPreference = 'Stop'
 
@@ -60,11 +62,18 @@ try {
         $env:FLET_ANDROID_SIGNING_KEY_PASSWORD = $pass
         $env:FLET_ANDROID_SIGNING_KEY_ALIAS = 'upload'
         $pass = $null
-        flet build apk --yes
+        $suffixe = ''
+        if ($Telephone) {
+            flet build apk --yes --arch arm64-v8a
+            $suffixe = '-arm64'
+        } else {
+            flet build apk --yes
+        }
         if ($LASTEXITCODE -ne 0) { throw 'échec de la construction APK' }
         $apk = Get-ChildItem 'build\apk\*.apk' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        Copy-Item $apk.FullName (Join-Path $Releases "prise_commande-$version.apk") -Force
-        Write-Host "APK : releases\prise_commande-$version.apk ($([math]::Round($apk.Length/1MB,1)) Mo)" -ForegroundColor Green
+        $nom = "prise_commande-$version$suffixe.apk"
+        Copy-Item $apk.FullName (Join-Path $Releases $nom) -Force
+        Write-Host "APK : releases\$nom ($([math]::Round($apk.Length/1MB,1)) Mo)" -ForegroundColor Green
     }
     if ($Cible -in 'tous', 'windows') {
         flet build windows --yes
