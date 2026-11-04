@@ -1,3 +1,5 @@
+import asyncio
+
 import flet as ft
 
 if __package__:
@@ -309,26 +311,62 @@ def install(ctx: AppContext) -> None:
         set_header_collapsed(False)
         ctx.apply_filter_layout()
 
-    # En-tête repliable : glisse vers le haut et disparaît quand on fait défiler la liste
-    # vers le bas ; ne revient qu'en haut de la liste. La recherche et les filtres actifs
-    # restent visibles. Un petit bouton permet de remonter en haut.
-    header_state = {"collapsed": False}
-    glide = ft.Animation(260, ft.AnimationCurve.EASE_OUT)
+    # En-tête repliable : quand on fait défiler la liste vers le bas, tout le haut
+    # (titre, recherche, onglets, filtres) glisse vers le haut sous la barre et disparaît ;
+    # il ne revient qu'en haut de la liste. Les filtres actifs restent visibles.
+    # Flutter n'anime pas une hauteur « libre » (None) : on fixe d'abord la hauteur
+    # mesurée, puis on anime vers 0 pendant que le contenu remonte (offset).
+    GLIDE_MS = 280
+    glide = ft.Animation(GLIDE_MS, ft.AnimationCurve.EASE_OUT)
+    header_state = {"collapsed": False, "height": 0.0, "generation": 0}
+
+    def remember_header_height(e: ft.LayoutSizeChangeEvent):
+        if not header_state["collapsed"] and e.height:
+            header_state["height"] = e.height
+
+    def push(*controls):
+        for control in controls:
+            try:
+                control.update()
+            except Exception:
+                pass  # pas encore affiché
+
+    def set_clip_height(height):
+        # Colonne défilante seulement à hauteur fixe : sans hauteur, elle n'aurait pas de limite.
+        header_clip.height = height
+        header_scroll.scroll = None if height is None else ft.ScrollMode.HIDDEN
+
+    async def animate_header(collapsed, generation):
+        measured = header_state["height"]
+        if collapsed:
+            if header_clip.height is None and measured:
+                set_clip_height(measured)  # point de départ fixe, sans changement visible
+                push(header_clip)
+                await asyncio.sleep(0.03)
+            if generation != header_state["generation"]:
+                return
+            set_clip_height(0)
+            header_body.offset = ft.Offset(0, -1)
+            header_body.opacity = 0
+        else:
+            set_clip_height(measured or None)
+            header_body.offset = ft.Offset(0, 0)
+            header_body.opacity = 1
+        ctx.order_info.visible = not collapsed
+        back_to_top.scale = 1 if collapsed else 0
+        push(header_clip, header_body, back_to_top, ctx.order_info)
+        if not collapsed:
+            await asyncio.sleep(GLIDE_MS / 1000 + 0.05)
+            if generation == header_state["generation"]:
+                set_clip_height(None)  # rend la hauteur libre (filtres ouverts/fermés)
+                push(header_clip)
 
     def set_header_collapsed(collapsed):
         if header_state["collapsed"] == collapsed:
             return
         header_state["collapsed"] = collapsed
-        for wrapper in (collapsible_top, collapsible_bottom):
-            wrapper.height = 0 if collapsed else None
-            wrapper.opacity = 0 if collapsed else 1
-        ctx.order_info.visible = not collapsed
-        back_to_top.scale = 1 if collapsed else 0
-        for control in (collapsible_top, collapsible_bottom, back_to_top, ctx.order_info):
-            try:
-                control.update()
-            except Exception:
-                pass  # pas encore affiché
+        header_state["generation"] += 1
+        ctx.page.run_task(animate_header, collapsed, header_state["generation"])
 
     def on_list_scroll(e: ft.OnScrollEvent):
         if e.pixels <= 8:
@@ -364,18 +402,21 @@ def install(ctx: AppContext) -> None:
     filter_search_row = ft.Row([search_input, filter_button], spacing=8)
     catalogue_heading = ui.heading("Catalogue", "Trouvez le bon matériel", ft.Icons.INVENTORY_2_OUTLINED)
     browse_row = ft.Row([browse_mode])
-    def collapsible(controls):
-        return ft.Container(
-            content=ft.Column(controls, spacing=8, tight=True),
-            alignment=ft.Alignment.BOTTOM_CENTER, clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            animate_size=glide, animate_opacity=glide,
-        )
-    collapsible_top = collapsible([catalogue_heading])
-    collapsible_bottom = collapsible([browse_row, filter_details])
+    header_body = ft.Container(
+        content=ft.Column([catalogue_heading, filter_search_row, browse_row, filter_details],
+                          spacing=8, tight=True),
+        offset=ft.Offset(0, 0), animate_offset=glide, animate_opacity=glide,
+        on_size_change=remember_header_height, size_change_interval=50,
+    )
+    # La colonne défilante laisse le contenu garder sa taille naturelle pendant que
+    # le conteneur rétrécit (sinon il serait écrasé au lieu de glisser).
+    header_scroll = ft.Column([header_body], spacing=0)
+    header_clip = ft.Container(
+        content=header_scroll,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE, animate=glide,
+    )
     content_catalogue = ft.Column([
-        collapsible_top,
-        filter_search_row,
-        collapsible_bottom,
+        header_clip,
         filter_tags,
         catalogue_info,
         ft.Stack([catalogue_listview, back_to_top], expand=True),
