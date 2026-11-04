@@ -21,3 +21,5 @@ Validation: 95 automated tests pass; the full manual checklist was run in the br
 Validation: 50 automated tests pass; catalogue selectors, management controls and the rename dialog checked at 390 px width.
 
 - 2026-11-03 — 1.5.0 (build 6), APK only, branch ui-testing: modernized adaptive UI and order productivity tools.
+
+- 2026-11-04 — 1.6.0 (build 8), APK only, branch ui-testing: catalogue header slides away while scrolling; back-to-top button.
