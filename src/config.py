@@ -4,6 +4,7 @@ CATALOGUE_STEM = "catalogue_importe"                # catalogue importé par l'u
 CATALOGUE_EXTENSIONS = (".xlsx", ".csv")
 SAMPLE_CATALOGUE_FILENAME = "catalogue_modele.xlsx"  # catalogue fictif fourni avec le code (même format)
 ORDERS_FILENAME = "commandes.json"
+TEMPLATES_FILENAME = "modeles.json"
 PREFS_FILENAME = "catalogue_perso.json"  # articles masqués, prix modifiés, articles ajoutés
 BACKUPS_DIRNAME = "sauvegardes"  # copies de secours créées avant une restauration (voir backup.py)
 RECOVERY_BACKUP_PATTERN = "avant-restauration-*.zip"

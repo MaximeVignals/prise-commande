@@ -19,6 +19,9 @@ else:
     from context import AppContext
 
 
+EMPTY_START = "__vide__"
+
+
 def install(ctx: AppContext) -> None:
     order_info = ui.text("", size=12, color=ui.MUTED)
 
@@ -46,8 +49,9 @@ def install(ctx: AppContext) -> None:
         ctx.show_snack(f"Commande active : {ctx.orders[order_id]['name']}")
         ctx.refresh()
 
-    def ask_name(title, initial, on_ok):
-        """Petite boîte de dialogue avec un champ texte (création / renommage)."""
+    def ask_name(title, initial, on_ok, extra=()):
+        """Petite boîte de dialogue avec un champ texte (création / renommage).
+        extra : contrôles affichés sous le champ (choix du modèle à la création)."""
         name_field = ui.field(
             value=initial,
             label="Nom de la commande",
@@ -66,7 +70,8 @@ def install(ctx: AppContext) -> None:
             scrollable=True,
             modal=True,
             title=ui.text(title),
-            content=name_field,
+            content=ft.Container(width=ctx.dialog_width(), content=ft.Column(
+                [name_field, *extra], tight=True, spacing=12)) if extra else name_field,
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: ctx.page.pop_dialog()),
                 ui.button(content="Valider", on_click=validate),
@@ -75,16 +80,30 @@ def install(ctx: AppContext) -> None:
 
     async def create_order_dialog(e=None):
         await close_drawer()
+        saved = ctx.load_templates()
+        start = ui.dropdown(label="Départ", value=EMPTY_START, options=[
+            ft.DropdownOption(key=EMPTY_START, text="Commande vide"),
+            *[ft.DropdownOption(key=tid, text=f"Modèle : {t['name']}") for tid, t in saved.items()]])
+        extra = [start] if saved else [ui.text(
+            "Astuce : une commande peut être enregistrée comme modèle (menu ⋮ › Enregistrer comme modèle) "
+            "pour repartir de ses articles.", size=12, color=ui.MUTED)]
 
-        def done(name):
-            ctx.new_order(name)
+        def created(order_id):
             ctx.state["show_archived"] = False
-            ctx.persist()
             ctx.render_all()
             ctx.go_to_tab(0)  # retour au catalogue pour remplir la nouvelle commande
             ctx.show_snack(f"🆕 Nouvelle commande : {ctx.current_order()['name']}")
 
-        ask_name("Nouvelle commande", default_order_name(), done)
+        def done(name):
+            if saved and start.value and start.value != EMPTY_START:
+                # Rien n'est créé tant que la vérification n'est pas validée
+                ctx.review_template(start.value, name, created)
+                return
+            ctx.new_order(name)
+            ctx.persist()
+            created(ctx.state["current"])
+
+        ask_name("Nouvelle commande", default_order_name(), done, extra)
 
     async def rename_order_dialog(order_id):
         await close_drawer()
@@ -246,11 +265,14 @@ def install(ctx: AppContext) -> None:
         async def on_archive(e):
             await archive_order(order_id)
 
+        async def on_template(e):
+            await ctx.save_template_dialog(order_id)
+
         async def on_notes(e):
             await select_order(order_id)
             edit_notes()
 
-        return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes
+        return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes, on_template
 
     def drawer_header():
         n_total = len(ctx.cat["all"])
@@ -311,6 +333,17 @@ def install(ctx: AppContext) -> None:
                     on_click=ctx.replace_catalogue,
                 ),
             ),
+            ft.Container(
+                padding=ft.Padding.symmetric(horizontal=8),
+                content=ft.ListTile(
+                    dense=True,
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                    leading=ft.Icon(ft.Icons.BOOKMARKS_OUTLINED, color=ft.Colors.PRIMARY),
+                    title=ui.text("Modèles de commande", weight=ft.FontWeight.W_500),
+                    subtitle=ui.text("Renommer ou supprimer", size=12),
+                    on_click=ctx.open_template_manager,
+                ),
+            ),
             ft.Divider(height=1),
             ft.Container(
                 padding=ft.Padding.only(left=16, top=12, bottom=4),
@@ -323,7 +356,7 @@ def install(ctx: AppContext) -> None:
     def order_tile(order_id, order):
         is_active = order_id == ctx.state["current"]
         created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
-        on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes = order_handlers(order_id)
+        on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes, on_template = order_handlers(order_id)
 
         return ft.Container(
             padding=ft.Padding.symmetric(horizontal=8),
@@ -346,6 +379,8 @@ def install(ctx: AppContext) -> None:
                         ft.PopupMenuItem(content="Remarques", icon=ft.Icons.NOTES, on_click=on_notes),
                         ft.PopupMenuItem(content="Dupliquer", icon=ft.Icons.CONTENT_COPY,
                             on_click=on_duplicate),
+                        ft.PopupMenuItem(content="Enregistrer comme modèle", icon=ft.Icons.BOOKMARK_ADD_OUTLINED,
+                            on_click=on_template),
                         ft.PopupMenuItem(content="Réactiver" if order.get("archived") else "Archiver",
                             icon=ft.Icons.UNARCHIVE_OUTLINED if order.get("archived") else ft.Icons.ARCHIVE_OUTLINED,
                             on_click=on_archive),
@@ -383,7 +418,7 @@ def install(ctx: AppContext) -> None:
             controls.append(order_tile(order_id, order))
 
         archives = sum(bool(order.get("archived")) for order in ctx.orders.values())
-        controls.insert(6, ft.Container(padding=8, content=ft.Row([
+        controls.insert(7, ft.Container(padding=8, content=ft.Row([
             ft.TextButton(content="Commandes actives" if ctx.state["show_archived"] else f"Archives ({archives})",
                 icon=ft.Icons.ARCHIVE_OUTLINED, on_click=show_order_group, expand=True),
         ])))

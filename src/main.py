@@ -5,7 +5,7 @@ if __package__:
     from .catalogue import load_catalogue
     from .import_screen import show_import_screen
     from .context import AppContext
-    from . import view_cart, view_catalogue, view_orders, view_admin, view_catalogues, view_photos, view_backup
+    from . import view_cart, view_catalogue, view_orders, view_admin, view_catalogues, view_photos, view_backup, view_templates
     from . import shell
 else:
     import ui
@@ -19,6 +19,7 @@ else:
     import view_catalogues
     import view_photos
     import view_backup
+    import view_templates
     import shell
 
 
@@ -50,6 +51,7 @@ def main(page: ft.Page):
     page.data = {"ctx": ctx}  # les tests retrouvent le contexte via page.data["ctx"]
     ctx.main = main  # partagé avec view_backup (relance après restauration)
 
+    view_templates.install(ctx)  # avant view_orders, qui utilise ses fonctions
     view_cart.install(ctx)
     view_catalogue.install(ctx)
     view_orders.install(ctx)
