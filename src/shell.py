@@ -18,6 +18,7 @@ def install(ctx: AppContext) -> None:
     def go_to_tab(index):
         ctx.state["tab"] = index
         navigation.selected_index = index
+        ctx.set_header_collapsed(False)
         layout_workspace()
     ctx.go_to_tab = go_to_tab  # partagé avec view_cart
 

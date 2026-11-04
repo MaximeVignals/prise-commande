@@ -306,7 +306,49 @@ def install(ctx: AppContext) -> None:
 
     def toggle_filters(e=None):
         ctx.state["filters_open"] = not ctx.state["filters_open"]
+        set_header_collapsed(False)
         ctx.apply_filter_layout()
+
+    # En-tête repliable : glisse vers le haut et disparaît quand on fait défiler la liste
+    # vers le bas ; ne revient qu'en haut de la liste. La recherche et les filtres actifs
+    # restent visibles. Un petit bouton permet de remonter en haut.
+    header_state = {"collapsed": False}
+    glide = ft.Animation(260, ft.AnimationCurve.EASE_OUT)
+
+    def set_header_collapsed(collapsed):
+        if header_state["collapsed"] == collapsed:
+            return
+        header_state["collapsed"] = collapsed
+        for wrapper in (collapsible_top, collapsible_bottom):
+            wrapper.height = 0 if collapsed else None
+            wrapper.opacity = 0 if collapsed else 1
+        ctx.order_info.visible = not collapsed
+        back_to_top.scale = 1 if collapsed else 0
+        for control in (collapsible_top, collapsible_bottom, back_to_top, ctx.order_info):
+            try:
+                control.update()
+            except Exception:
+                pass  # pas encore affiché
+
+    def on_list_scroll(e: ft.OnScrollEvent):
+        if e.pixels <= 8:
+            set_header_collapsed(False)
+        elif e.pixels > 40 and e.scroll_delta is not None and e.scroll_delta > 2:
+            set_header_collapsed(True)
+
+    async def go_to_top(e):
+        await catalogue_listview.scroll_to(offset=0, duration=350)
+        set_header_collapsed(False)
+
+    catalogue_listview.on_scroll = on_list_scroll
+    back_to_top = ft.Container(
+        content=ft.IconButton(
+            icon=ft.Icons.ARROW_UPWARD, tooltip="Revenir en haut", on_click=go_to_top,
+            style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY, icon_color=ft.Colors.ON_PRIMARY),
+        ),
+        left=0, right=0, bottom=12, alignment=ft.Alignment.BOTTOM_CENTER,
+        scale=0, animate_scale=glide,
+    )
 
     filter_button = ft.IconButton(
         icon=ft.Icons.TUNE, tooltip="Afficher ou masquer les filtres",
@@ -322,16 +364,24 @@ def install(ctx: AppContext) -> None:
     filter_search_row = ft.Row([search_input, filter_button], spacing=8)
     catalogue_heading = ui.heading("Catalogue", "Trouvez le bon matériel", ft.Icons.INVENTORY_2_OUTLINED)
     browse_row = ft.Row([browse_mode])
+    def collapsible(controls):
+        return ft.Container(
+            content=ft.Column(controls, spacing=8, tight=True),
+            alignment=ft.Alignment.BOTTOM_CENTER, clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            animate_size=glide, animate_opacity=glide,
+        )
+    collapsible_top = collapsible([catalogue_heading])
+    collapsible_bottom = collapsible([browse_row, filter_details])
     content_catalogue = ft.Column([
-        catalogue_heading,
+        collapsible_top,
         filter_search_row,
-        browse_row,
-        filter_details,
+        collapsible_bottom,
         filter_tags,
         catalogue_info,
-        catalogue_listview,
+        ft.Stack([catalogue_listview, back_to_top], expand=True),
     ], expand=True, spacing=8)
 
+    ctx.set_header_collapsed = set_header_collapsed
     ctx.render_catalogue = render_catalogue
     ctx.update_catalogue_badges = update_catalogue_badges
     ctx.content_catalogue = content_catalogue
