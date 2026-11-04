@@ -1,12 +1,4 @@
 #!/bin/sh
-# Refuses a commit that contains a spreadsheet (other than the made-up templates),
-# a signing key or a password file.
-bad=$(git diff --cached --name-only --diff-filter=ACMR \
-  | grep -iE '\.(xlsx|xls|xlsm|csv|ods|jks|keystore|p12|pfx|apk|aab)$|mot_de_passe|commandes.*\.json$' \
-  | grep -vxE 'src/assets/catalogue_modele\.xlsx|modele/catalogue_modele\.(xlsx|csv)')
-if [ -n "$bad" ]; then
-  echo "COMMIT REFUSE : fichiers prives dans le commit :"
-  echo "$bad" | sed 's/^/  - /'
-  echo "Retirez-les avec : git restore --staged \"<fichier>\""
-  exit 1
-fi
+# Checks staged filenames only; never reads private data or signing keys.
+root=$(git rev-parse --show-toplevel) || exit 1
+exec python "$root/scripts/check_private_files.py"

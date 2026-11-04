@@ -56,9 +56,10 @@ python -m unittest discover -s tests -v
 ```
 
 The tests use the sample catalogue and isolated temporary storage under `storage/tests/`.
-The 95 tests cover catalogue imports and visibility, prices, persistence, migration,
+The tests cover catalogue imports and visibility, prices, persistence, migration,
 photos, adaptive layouts, favorites/recents, notes, order duplication/archiving,
-backup validation and rollback, restore UI flows, web downloads, and the module layout.
+backup validation and rollback, restore UI flows, web downloads, the module layout,
+and the privacy hook using dummy files in an isolated Git repository.
 
 ## Code layout
 
@@ -80,7 +81,7 @@ Dependencies go one way: screens → logic → constants. [REFACTOR_NOTES.md](RE
 
 The script expects a private folder layout next to the repo: `..\signature_android\` for the Android key, and `..\releases\` for the outputs.  No catalogue is built in; the script stops if a data file other than the template sits in `src/assets`. Version and build number come from `pyproject.toml`.
 
-A pre-commit hook in `.githooks/` refuses spreadsheets other than the templates, signing keys and password files. Enable it with `git config core.hooksPath .githooks`.
+A pre-commit hook in `.githooks/` refuses spreadsheets other than the three exact template paths, signing keys, credentials, private catalogue rules/preferences, orders, and files in private data/build folders, even when added with `git add -f`. It checks filenames only and requires Python on PATH; template contents must remain fictitious. Enable it in each clone with `git config core.hooksPath .githooks`.
 
 ## Stack
 

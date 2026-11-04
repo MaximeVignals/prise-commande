@@ -1,5 +1,7 @@
 # --- Private data: the real catalogue lives in ..\prive, outside this repo.
 #     Users import it in the app; it is never built in.
+prive/
+regles_catalogue*.json
 *.xls
 *.xlsm
 *.csv
@@ -17,11 +19,20 @@
 *.pfx
 mot_de_passe*
 signature_android/
+Ne Pas Upload/
+.env
+.env.*
+credentials*.json
+*.pem
+*.key
 
 # --- Orders, photos and app storage
 commandes*.json
 catalogue_perso*.json
+catalogue_importe*
 storage/
+photos/
+sauvegardes/
 
 # --- Build output
 build/
