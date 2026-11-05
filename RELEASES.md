@@ -24,3 +24,4 @@ Validation: 50 automated tests pass; catalogue selectors, management controls an
 
 - 2026-11-04 — 1.6.0 (build 8), APK only, branch ui-testing: catalogue header slides away while scrolling; back-to-top button.
 - 2026-11-04 — 1.6.1 (build 9), APK only, branch ui-testing: header (with search bar) now glides away smoothly while scrolling.
+- 2026-11-05 — 1.7.0 (build 10), APK only, branch ui-testing: order templates, with a review step before creating an order.
