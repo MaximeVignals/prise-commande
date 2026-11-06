@@ -25,3 +25,4 @@ Validation: 50 automated tests pass; catalogue selectors, management controls an
 - 2026-11-04 — 1.6.0 (build 8), APK only, branch ui-testing: catalogue header slides away while scrolling; back-to-top button.
 - 2026-11-04 — 1.6.1 (build 9), APK only, branch ui-testing: header (with search bar) now glides away smoothly while scrolling.
 - 2026-11-05 — 1.7.0 (build 10), APK only, branch ui-testing: order templates, with a review step before creating an order.
+- 2026-11-06 — 1.7.1 (build 11), APK only (arm64), branch ui-testing: fix multi-second lag on add to cart and tab switches (scroll events no longer redraw the whole page; cart changes update only the cart; tabs stay attached). Tested on the phone.

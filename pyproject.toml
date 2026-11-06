@@ -1,6 +1,6 @@
 [project]
 name = "prise-commande"
-version = "1.7.0"
+version = "1.7.1"
 description = "Prise de commande à partir du catalogue matériel"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,7 +14,7 @@ org = "com.monentreprise"        # à remplacer par votre domaine inversé
 product = "Prise de Commande"    # nom affiché sous l'icône sur le téléphone
 icon_background = "#1E6FD9"      # fond bleu derrière l'icône (src/assets/icon.png)
 permissions = ["camera"]         # Android demande l'accès à l'appareil photo au premier usage
-build_number = 10                 # +1 à chaque version : Android refuse un APK au numéro égal ou inférieur
+build_number = 11                 # +1 à chaque version : Android refuse un APK au numéro égal ou inférieur
 
 [tool.flet.splash]
 color = "#1E6FD9"                # écran de démarrage bleu, assorti à l'icône
