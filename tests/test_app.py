@@ -756,6 +756,49 @@ class AdaptiveWorkspaceTests(StorageTest):
         snack.on_action(None)
         self.assertEqual(storage.load_orders()[0]["demo"]["items"][item["Cle"]]["quantite"], 12)
 
+    def test_cart_change_updates_menu_total_without_rebuilding_menu(self):
+        item = catalogue_mod.load_catalogue()[0]
+        drawer_controls = self.page.drawer.controls
+        self.page.find(ft.IconButton, tooltip=f"Ajouter au panier : {item['Nom_Article']}").on_click(None)
+        self.assertIs(self.page.drawer.controls, drawer_controls)  # menu non reconstruit
+        summary = self.page.find(ft.ListTile, selected=True).subtitle
+        self.assertIn("1 art.", summary.value)
+        self.page.select_tab(1)
+        self.page.find(ft.IconButton, tooltip="Augmenter").on_click(None)
+        self.assertIn("2 art.", summary.value)
+
+    def test_tabs_keep_screens_attached_and_cart_has_one_parent(self):
+        ctx = self.page.data["ctx"]
+        for width, index in [(390, 1), (390, 2), (390, 0), (1000, 1), (1000, 2), (390, 1), (1000, 0), (390, 0)]:
+            self.resize(width, 900)
+            self.page.select_tab(index)
+            dual = ctx.window["layout"].dual_pane
+            seen = []
+            pending = [self.page.controls[0]]
+            while pending:  # compte les parents du panier dans l'arbre affiché
+                value = pending.pop()
+                children = getattr(value, "controls", None) or []
+                content = getattr(value, "content", None)
+                for child in list(children) + ([content] if isinstance(content, ft.BaseControl) else []):
+                    if child is ctx.content_panier:
+                        seen.append(value)
+                    pending.append(child)
+            self.assertEqual(len(seen), 1, (width, index))
+            self.assertEqual(ctx.content_catalogue.visible, index == 0 or (dual and index == 1))
+            self.assertEqual(ctx.content_panier.visible, dual or index == 1)
+            self.assertEqual(ctx.content_photos.visible, index == 2)
+
+    def test_short_window_cart_keeps_total_after_quantity_change(self):
+        item = catalogue_mod.load_catalogue()[0]
+        self.page.find(ft.IconButton, tooltip=f"Ajouter au panier : {item['Nom_Article']}").on_click(None)
+        self.resize(850, 440)
+        self.page.select_tab(1)
+        ctx = self.page.data["ctx"]
+        self.assertIn(ctx.basket_footer, ctx.cart_listview.controls)
+        self.page.find(ft.IconButton, tooltip="Augmenter").on_click(None)
+        self.assertIn(ctx.basket_footer, ctx.cart_listview.controls)
+        self.assertEqual(ctx.cart_listview.controls.count(ctx.basket_footer), 1)
+
     def test_filter_changes_restore_quantity_draft(self):
         item = catalogue_mod.load_catalogue()[0]
         tooltip = f"Quantité à ajouter : {item['Nom_Article']}"

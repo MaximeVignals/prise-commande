@@ -20,6 +20,22 @@ PANEL = ft.Colors.SURFACE_CONTAINER_LOW
 LINE = ft.Colors.OUTLINE_VARIANT
 
 
+def skip_auto_update():
+    """Pas de rafraîchissement automatique à la fin de cet événement.
+
+    Flet 1.0 compare toute la page après chaque événement (≈ 6 500 contrôles avec
+    400 articles). Pour un événement fréquent qui ne change rien à l'écran (défilement,
+    mesure de taille, saisie mémorisée), c'est du travail perdu qui retarde les clics
+    suivants. Hors d'une app Flet (tests), on ne touche à rien : l'appel changerait
+    le réglage de tout le processus.
+    """
+    try:
+        ft.context.page
+    except RuntimeError:
+        return
+    ft.context.disable_auto_update()
+
+
 @dataclass(frozen=True)
 class WindowLayout:
     """Logical window dimensions, never physical pixels or a device model.

@@ -353,10 +353,26 @@ def install(ctx: AppContext) -> None:
         ]
         return controls
 
+    # Ligne « date · articles · total » de chaque commande du menu, pour la mettre à jour
+    # seule après un changement du panier (sans reconstruire tout le menu).
+    order_summaries = {}
+
+    def order_summary_text(order):
+        created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
+        return (f"{created} · {order_count(order)} art. · {fmt_eur(order_total(order))}"
+                + (f" · 📷 {len(order['photos'])}" if order.get("photos") else ""))
+
+    def update_order_summary(order_id=None):
+        order_id = order_id or ctx.state["current"]
+        text = order_summaries.get(order_id)
+        if text is not None and order_id in ctx.orders:
+            text.value = order_summary_text(ctx.orders[order_id])
+
     def order_tile(order_id, order):
         is_active = order_id == ctx.state["current"]
-        created = datetime.fromisoformat(order["created"]).strftime("%d/%m")
         on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes, on_template = order_handlers(order_id)
+        summary = ui.text(order_summary_text(order), size=12)
+        order_summaries[order_id] = summary
 
         return ft.Container(
             padding=ft.Padding.symmetric(horizontal=8),
@@ -367,11 +383,7 @@ def install(ctx: AppContext) -> None:
                     order["name"], max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                     weight=ft.FontWeight.BOLD if is_active else ft.FontWeight.NORMAL,
                 ),
-                subtitle=ui.text(
-                    f"{created} · {order_count(order)} art. · {fmt_eur(order_total(order))}"
-                    + (f" · 📷 {len(order['photos'])}" if order.get("photos") else ""),
-                    size=12,
-                ),
+                subtitle=summary,
                 trailing=ft.PopupMenuButton(
                     icon=ft.Icons.MORE_VERT,
                     tooltip="Options",
@@ -398,6 +410,7 @@ def install(ctx: AppContext) -> None:
         )
 
     def render_orders():
+        order_summaries.clear()
         controls = drawer_header()
 
         if not ctx.orders:
@@ -433,6 +446,7 @@ def install(ctx: AppContext) -> None:
         drawer.controls = controls
 
     ctx.render_orders = render_orders
+    ctx.update_order_summary = update_order_summary  # partagé avec view_cart
     ctx.create_order_dialog = create_order_dialog
     ctx.archive_order = archive_order
     ctx.open_drawer = open_drawer

@@ -33,12 +33,22 @@ def install(ctx: AppContext) -> None:
         else:
             ctx.appbar_title.value = ctx.current_order()["name"]
             body.content = workspace
-            ctx.render_cart()
+            ctx.render_cart()  # met aussi à jour les badges du catalogue
             ctx.render_photos()
             layout_workspace()
-        ctx.update_catalogue_badges()
+        if ctx.state["current"] is None:
+            ctx.update_catalogue_badges()
         ctx.render_orders()
     ctx.render_all = render_all  # partagé avec view_cart
+
+    def refresh_cart_state():
+        """Après un changement du panier seulement (ajout, quantité, retrait) : le panier, ses
+        résumés, les badges du catalogue et la ligne de la commande dans le menu.
+        Les photos, le menu complet et la mise en page du catalogue ne changent pas."""
+        ctx.render_cart()
+        place_basket_footer()  # render_cart() vide la liste, qui peut contenir le total
+        update_quick_cart()
+    ctx.refresh_cart_state = refresh_cart_state  # partagé avec view_cart et view_catalogue
 
     file_picker = ft.FilePicker()  # services : on garde une référence
     ctx.file_picker = file_picker  # partagé avec view_catalogues
@@ -105,7 +115,12 @@ def install(ctx: AppContext) -> None:
         ],
         selected_index=0, on_change=lambda e: go_to_tab(e.control.selected_index),
     )
-    main_host = ft.Container(expand=True)
+    # Les trois écrans restent attachés ; changer d'onglet ne fait que les afficher ou les
+    # masquer. Les retirer puis les remettre obligeait Flet à renvoyer tout le catalogue
+    # (≈ 6 500 contrôles avec 400 articles) à chaque retour sur « Catalogue ».
+    tabs_column = ft.Column([ctx.content_catalogue, ctx.content_panier, ctx.content_photos],
+                            expand=True, spacing=0)
+    main_host = ft.Container(content=tabs_column, expand=True)
     detail_host = ft.Container(expand=True, visible=False)
     # The central gutter keeps controls away from the typical inner display crease.
     # Flet 1.0.4 does not expose Android display-feature / hinge geometry.
@@ -166,13 +181,10 @@ def install(ctx: AppContext) -> None:
                 card.content = wide if card_width >= 380 else compact
     ctx.apply_catalogue_columns = apply_catalogue_columns  # partagé avec view_catalogue
 
-    def layout_workspace():
-        layout = ctx.window["layout"]
-        apply_filter_layout()
-        apply_catalogue_columns()
+    def place_basket_footer():
         # In a short landscape/keyboard window, let the summary scroll with
         # the lines instead of consuming all of the basket's usable height.
-        if layout.short:
+        if ctx.window["layout"].short:
             if ctx.basket_footer in ctx.content_panier.controls:
                 ctx.content_panier.controls.remove(ctx.basket_footer)
             if ctx.basket_footer not in ctx.cart_listview.controls:
@@ -182,18 +194,41 @@ def install(ctx: AppContext) -> None:
                 ctx.cart_listview.controls.remove(ctx.basket_footer)
             if ctx.basket_footer not in ctx.content_panier.controls:
                 ctx.content_panier.controls.append(ctx.basket_footer)
+
+    def update_quick_cart():
+        layout = ctx.window["layout"]
+        quick_cart.visible = bool(ctx.state["current"] and order_count(ctx.current_order())
+                                  and not layout.dual_pane and not layout.short and ctx.state["tab"] == 0)
+
+    def place_cart_pane(dual):
+        # Le panier ne peut avoir qu'un parent : à droite en double volet, sinon avec les
+        # onglets. On ne le déplace qu'au passage simple ↔ double volet (pliage,
+        # redimensionnement), jamais en changeant d'onglet.
+        if ctx.state.get("cart_in_detail") == dual:
+            return
+        if dual:
+            if ctx.content_panier in tabs_column.controls:
+                tabs_column.controls.remove(ctx.content_panier)
+            detail_host.content = ctx.content_panier
+        else:
+            detail_host.content = None
+            if ctx.content_panier not in tabs_column.controls:
+                tabs_column.controls.insert(1, ctx.content_panier)
+        detail_host.visible = dual
+        ctx.state["cart_in_detail"] = dual
+
+    def layout_workspace():
+        layout = ctx.window["layout"]
+        apply_filter_layout()
+        apply_catalogue_columns()
+        place_basket_footer()
         index = ctx.state["tab"]
         dual = layout.dual_pane
-        # Reparent only at a layout/navigation boundary, never on every resize pixel.
-        signature = (dual, index)
-        if ctx.state.get("layout_signature") != signature:
-            main_host.content = None
-            detail_host.content = None
-            main_host.content = ctx.content_photos if index == 2 else ctx.content_catalogue if dual or index == 0 else ctx.content_panier
-            if dual:
-                detail_host.content = ctx.content_panier
-            detail_host.visible = dual
-            ctx.state["layout_signature"] = signature
+        place_cart_pane(dual)
+        # Double volet : catalogue (ou photos) à gauche, panier toujours visible à droite.
+        ctx.content_photos.visible = index == 2
+        ctx.content_catalogue.visible = index == 0 or (dual and index == 1)
+        ctx.content_panier.visible = dual or index == 1
         pane_area.padding = layout.margin
         pane_frame.width = min(1440 if dual else 780, max(0, layout.width - 2 * layout.margin))
         ctx.drawer.width = min(360, max(240, layout.width - 24))
@@ -201,8 +236,7 @@ def install(ctx: AppContext) -> None:
         main_host.expand = (1 if layout.width < 1200 else 6) if dual else True
         detail_host.expand = 1 if layout.width < 1200 else 5
         navigation.visible = not (layout.short and ctx.state.get("keyboard_open", False))
-        quick_cart.visible = bool(ctx.state["current"] and order_count(ctx.current_order()) and not dual
-                                  and not layout.short and ctx.state["tab"] == 0)
+        update_quick_cart()
 
     async def on_workspace_size(e):
         ctx.window["layout"] = ui.WindowLayout(e.width, e.height)

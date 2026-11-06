@@ -84,7 +84,7 @@ def install(ctx: AppContext) -> None:
         ctx.persist_prefs()
         if browse_mode.selected == ["recent"]:
             render_catalogue()
-        ctx.render_all()
+        ctx.refresh_cart_state()  # panier, résumés, badges ; pas les photos ni tout le menu
         ctx.show_snack(f"✅ Ajouté au panier (x{qty})")
         ctx.refresh()
 
@@ -143,6 +143,11 @@ def install(ctx: AppContext) -> None:
             margin=ft.Margin.only(top=2),
         )
 
+    def store_draft(key, value):
+        # Quantité tapée, mémorisée pour plus tard : l'écran affiche déjà la saisie.
+        ui.skip_auto_update()
+        ctx.quantity_drafts[key] = value
+
     def render_catalogue():
         catalogue_listview.controls.clear()
         ctx.catalogue_grids.clear()
@@ -186,7 +191,7 @@ def install(ctx: AppContext) -> None:
                     keyboard_type=ft.KeyboardType.NUMBER,
                     input_filter=ft.NumbersOnlyInputFilter(),
                     dense=True, tooltip=f"Quantité à ajouter : {current_item['Nom_Article']}",
-                    on_change=lambda e, k=draft_key: ctx.quantity_drafts.__setitem__(k, e.control.value),
+                    on_change=lambda e, k=draft_key: store_draft(k, e.control.value),
                 )
                 def adjust(e, q=qty_field, k=draft_key, delta=1):
                     ctx.change_qty_field(q, delta)
@@ -282,8 +287,10 @@ def install(ctx: AppContext) -> None:
         items = ctx.cart() if ctx.state["current"] else {}
         for key, badge in ctx.catalogue_badges.items():
             quantity = items.get(key, {}).get("quantite", 0)
-            badge.value = f"Déjà {quantity} dans la commande" if quantity else ""
-            badge.visible = quantity > 0
+            value = f"Déjà {quantity} dans la commande" if quantity else ""
+            if badge.value != value or badge.visible != (quantity > 0):
+                badge.value = value
+                badge.visible = quantity > 0
 
     def render_filter_tags():
         tags = []
@@ -321,6 +328,7 @@ def install(ctx: AppContext) -> None:
     header_state = {"collapsed": False, "height": 0.0, "generation": 0}
 
     def remember_header_height(e: ft.LayoutSizeChangeEvent):
+        ui.skip_auto_update()  # simple mesure : rien à redessiner
         if not header_state["collapsed"] and e.height:
             header_state["height"] = e.height
 
@@ -369,6 +377,10 @@ def install(ctx: AppContext) -> None:
         ctx.page.run_task(animate_header, collapsed, header_state["generation"])
 
     def on_list_scroll(e: ft.OnScrollEvent):
+        # Un événement par image pendant le défilement : sans ça, chacun recomparait
+        # toute la page et les clics suivants attendaient derrière (plusieurs secondes).
+        # L'animation de l'en-tête envoie elle-même ses changements (push).
+        ui.skip_auto_update()
         if e.pixels <= 8:
             set_header_collapsed(False)
         elif e.pixels > 40 and e.scroll_delta is not None and e.scroll_delta > 2:

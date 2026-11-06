@@ -33,7 +33,7 @@ def install(ctx: AppContext) -> None:
             return
         items[id_art]["quantite"] += delta
         ctx.persist()
-        ctx.render_all()
+        ctx.refresh_cart_state()
         ctx.refresh()
 
     def remove_cart_line(id_art):
@@ -45,7 +45,7 @@ def install(ctx: AppContext) -> None:
         position = list(items).index(id_art)
         line = items.pop(id_art)
         ctx.persist()
-        ctx.render_all()
+        ctx.refresh_cart_state()
 
         def undo(e):
             if order_id not in ctx.orders or id_art in ctx.orders[order_id]["items"]:
@@ -55,7 +55,8 @@ def install(ctx: AppContext) -> None:
             ctx.orders[order_id]["items"].clear()
             ctx.orders[order_id]["items"].update(restored)
             ctx.persist()
-            ctx.render_all()
+            ctx.refresh_cart_state()
+            ctx.update_order_summary(order_id)  # au cas où une autre commande est active entre-temps
             ctx.refresh()
 
         ctx.page.show_dialog(ft.SnackBar(
@@ -82,8 +83,7 @@ def install(ctx: AppContext) -> None:
                 items[id_art]["quantite"] = qty
                 ctx.persist()
                 subtotal_text.value = fmt_eur(items[id_art]["Prix"] * qty)
-                update_cart_summary()
-                ctx.render_orders()
+                update_cart_summary()  # met aussi à jour le total de la commande dans le menu
             if final:
                 field.value = str(qty)
         elif final:
@@ -104,7 +104,7 @@ def install(ctx: AppContext) -> None:
                 return
             order["items"].clear()
             ctx.persist()
-            ctx.render_all()
+            ctx.refresh_cart_state()
             ctx.show_snack("🗑️ Panier vidé.")
             ctx.refresh()
 
@@ -207,6 +207,7 @@ def install(ctx: AppContext) -> None:
         copy_order_btn.disabled = not bool(order["items"])
         clear_order_btn.disabled = not bool(order["items"])
         ctx.update_catalogue_badges()
+        ctx.update_order_summary()  # ligne de la commande dans le menu (articles, total)
 
     copy_order_btn = ui.button(
         content="Copier pour la Compta", icon=ft.Icons.COPY,
