@@ -816,9 +816,11 @@ class AdaptiveWorkspaceTests(StorageTest):
     def test_system_theme_and_toggle_preserve_order(self):
         self.assertEqual(self.page.theme_mode, ft.ThemeMode.SYSTEM)
         before = storage.load_orders()
-        toggle = self.page.find(ft.IconButton, tooltip="Changer le thème clair / sombre")
+        title = self.page.find(ft.Text, value="Passer en thème sombre")  # ☰ › Réglages
+        toggle = self.page.find(ft.ListTile, title=title)
         toggle.on_click(None)
         self.assertEqual(self.page.theme_mode, ft.ThemeMode.DARK)
+        self.assertEqual(title.value, "Passer en thème clair")
         toggle.on_click(None)
         self.assertEqual(self.page.theme_mode, ft.ThemeMode.LIGHT)
         self.assertEqual(storage.load_orders(), before)

@@ -6,20 +6,21 @@ import flet as ft
 
 if __package__:
     from . import ui, storage
-    from .text import default_order_name, fmt_eur
+    from .text import default_order_name, fmt_eur, matches_search
     from .storage import photos_dir
     from .orders import duplicate_order, order_count, order_total
     from .context import AppContext
 else:
     import ui
     import storage
-    from text import default_order_name, fmt_eur
+    from text import default_order_name, fmt_eur, matches_search
     from storage import photos_dir
     from orders import duplicate_order, order_count, order_total
     from context import AppContext
 
 
 EMPTY_START = "__vide__"
+ORDER_SEARCH_MIN = 6  # nombre de commandes à partir duquel le menu propose une recherche
 
 
 def install(ctx: AppContext) -> None:
@@ -226,6 +227,12 @@ def install(ctx: AppContext) -> None:
             ctx.show_snack(f"🗑️ « {order['name']} » supprimée.")
             ctx.refresh()
 
+        async def archive_instead(e):
+            ctx.page.pop_dialog()
+            if order_id in ctx.orders:
+                await archive_order(order_id)
+
+        can_archive = not order.get("archived")
         ctx.page.show_dialog(ft.AlertDialog(
             scrollable=True,
             modal=True,
@@ -235,9 +242,13 @@ def install(ctx: AppContext) -> None:
                 f"{fmt_eur(order_total(order))}) sera définitivement supprimée."
                 + (f"\nSes {len(order.get('photos', []))} photo(s) aussi."
                    if order.get("photos") else "")
+                + ("\n\nPour la retirer de la liste sans la perdre, archivez-la plutôt."
+                   if can_archive else "")
             ),
             actions=[
                 ft.TextButton(content="Annuler", on_click=lambda e: ctx.page.pop_dialog()),
+                *([ft.TextButton(content="Archiver plutôt", icon=ft.Icons.ARCHIVE_OUTLINED,
+                                 on_click=archive_instead)] if can_archive else []),
                 ui.button(
                     content="Supprimer",
                     on_click=confirm,
@@ -274,12 +285,54 @@ def install(ctx: AppContext) -> None:
 
         return on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes, on_template
 
+    # --- MENU LATÉRAL : commandes d'abord, réglages en bas ---
+    def is_dark():
+        return ctx.page.theme_mode == ft.ThemeMode.DARK or (
+            ctx.page.theme_mode == ft.ThemeMode.SYSTEM
+            and getattr(ctx.page, "platform_brightness", None) == ft.Brightness.DARK
+        )
+
+    theme_title = ui.text("", weight=ft.FontWeight.W_500)
+    theme_icon = ft.Icon(ft.Icons.DARK_MODE_OUTLINED, color=ft.Colors.PRIMARY)
+
+    def update_theme_tile():
+        theme_title.value = "Passer en thème clair" if is_dark() else "Passer en thème sombre"
+        theme_icon.icon = ft.Icons.LIGHT_MODE_OUTLINED if is_dark() else ft.Icons.DARK_MODE_OUTLINED
+
+    def toggle_theme(e=None):
+        ctx.page.theme_mode = ft.ThemeMode.LIGHT if is_dark() else ft.ThemeMode.DARK
+        update_theme_tile()
+
+    async def on_order_search(e=None):
+        render_order_tiles()
+
+    # Champs gardés d'un rendu à l'autre : la saisie et le clavier restent en place.
+    order_search = ui.field(
+        label="Rechercher une commande", hint_text="Nom, date (ex. 03/11)…",
+        prefix_icon=ft.Icons.SEARCH, dense=True, on_change=on_order_search,
+    )
+    order_search_box = ft.Container(content=order_search, visible=False,
+                                    padding=ft.Padding.symmetric(horizontal=12, vertical=4))
+    orders_label = ui.text("Commandes", size=12, weight=ft.FontWeight.W_600,
+                           color=ft.Colors.ON_SURFACE_VARIANT, expand=True)
+    archive_toggle = ft.TextButton(icon=ft.Icons.ARCHIVE_OUTLINED, on_click=lambda e: show_order_group(e))
+    orders_column = ft.Column(spacing=0, tight=True)
+
+    def settings_tile(icon, title, subtitle, on_click, leading=None):
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=8),
+            content=ft.ListTile(
+                dense=True,
+                shape=ft.RoundedRectangleBorder(radius=10),
+                leading=leading or ft.Icon(icon, color=ft.Colors.PRIMARY),
+                title=title if isinstance(title, ft.Text) else ui.text(title, weight=ft.FontWeight.W_500),
+                subtitle=ui.text(subtitle, size=12) if subtitle else None,
+                on_click=on_click,
+            ),
+        )
+
     def drawer_header():
-        n_total = len(ctx.cat["all"])
-        n_visible = len(ctx.visible_entries())
-        names = ctx.managed_catalogues()
-        n_catalogues_visible = sum(name not in ctx.prefs["hidden_catalogues"] for name in names)
-        controls = [
+        return [
             ft.Container(
                 padding=ft.Padding.only(left=16, right=16, top=16, bottom=8),
                 content=ft.Row([
@@ -300,58 +353,39 @@ def install(ctx: AppContext) -> None:
                     ),
                 ]),
             ),
+            order_search_box,
             ft.Container(
-                padding=ft.Padding.symmetric(horizontal=8),
-                content=ft.ListTile(
-                    dense=True,
-                    shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ft.Colors.PRIMARY),
-                    title=ui.text("Gérer les catalogues", weight=ft.FontWeight.W_500),
-                    subtitle=ui.text(f"{n_catalogues_visible} affichés sur {len(names)}", size=12),
-                    on_click=ctx.open_catalogue_manager,
-                ),
+                padding=ft.Padding.only(left=16, right=8, top=8),
+                content=ft.Row([orders_label, archive_toggle]),
             ),
-            ft.Container(
-                padding=ft.Padding.symmetric(horizontal=8),
-                content=ft.ListTile(
-                    dense=True,
-                    shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.TUNE, color=ft.Colors.PRIMARY),
-                    title=ui.text("Gérer les articles", weight=ft.FontWeight.W_500),
-                    subtitle=ui.text(f"{n_visible} affichés sur {n_total}", size=12),
-                    on_click=ctx.open_admin,
-                ),
-            ),
-            ft.Container(
-                padding=ft.Padding.symmetric(horizontal=8),
-                content=ft.ListTile(
-                    dense=True,
-                    shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.UPLOAD_FILE, color=ft.Colors.PRIMARY),
-                    title=ui.text("Importer un catalogue", weight=ft.FontWeight.W_500),
-                    subtitle=ui.text("Remplace le catalogue actuel (.xlsx ou .csv)", size=12),
-                    on_click=ctx.replace_catalogue,
-                ),
-            ),
-            ft.Container(
-                padding=ft.Padding.symmetric(horizontal=8),
-                content=ft.ListTile(
-                    dense=True,
-                    shape=ft.RoundedRectangleBorder(radius=10),
-                    leading=ft.Icon(ft.Icons.BOOKMARKS_OUTLINED, color=ft.Colors.PRIMARY),
-                    title=ui.text("Modèles de commande", weight=ft.FontWeight.W_500),
-                    subtitle=ui.text("Renommer ou supprimer", size=12),
-                    on_click=ctx.open_template_manager,
-                ),
-            ),
+            orders_column,
+        ]
+
+    def drawer_settings():
+        n_total = len(ctx.cat["all"])
+        n_visible = len(ctx.visible_entries())
+        names = ctx.managed_catalogues()
+        n_catalogues_visible = sum(name not in ctx.prefs["hidden_catalogues"] for name in names)
+        update_theme_tile()
+        return [
             ft.Divider(height=1),
             ft.Container(
                 padding=ft.Padding.only(left=16, top=12, bottom=4),
-                content=ui.text("Commandes", size=12, weight=ft.FontWeight.W_600,
+                content=ui.text("Réglages", size=12, weight=ft.FontWeight.W_600,
                                 color=ft.Colors.ON_SURFACE_VARIANT),
             ),
+            settings_tile(ft.Icons.FOLDER_OUTLINED, "Gérer les catalogues",
+                          f"{n_catalogues_visible} affichés sur {len(names)}", ctx.open_catalogue_manager),
+            settings_tile(ft.Icons.TUNE, "Gérer les articles",
+                          f"{n_visible} affichés sur {n_total}", ctx.open_admin),
+            settings_tile(ft.Icons.UPLOAD_FILE, "Importer un catalogue",
+                          "Remplace le catalogue actuel (.xlsx ou .csv)", ctx.replace_catalogue),
+            settings_tile(ft.Icons.BOOKMARKS_OUTLINED, "Modèles de commande",
+                          "Renommer ou supprimer", ctx.open_template_manager),
+            settings_tile(ft.Icons.BACKUP_OUTLINED, "Sauvegarder / restaurer", None, ctx.open_backup_view),
+            settings_tile(None, theme_title, None, toggle_theme, leading=theme_icon),
+            ft.Container(height=12),
         ]
-        return controls
 
     # Ligne « date · articles · total » de chaque commande du menu, pour la mettre à jour
     # seule après un changement du panier (sans reconstruire tout le menu).
@@ -368,10 +402,10 @@ def install(ctx: AppContext) -> None:
         if text is not None and order_id in ctx.orders:
             text.value = order_summary_text(ctx.orders[order_id])
 
-    def order_tile(order_id, order):
+    def order_tile(order_id, order, show_archived_mark=False):
         is_active = order_id == ctx.state["current"]
         on_select, on_rename, on_delete, on_duplicate, on_archive, on_notes, on_template = order_handlers(order_id)
-        summary = ui.text(order_summary_text(order), size=12)
+        summary = ui.text(order_summary_text(order) + (" · archivée" if show_archived_mark else ""), size=12)
         order_summaries[order_id] = summary
 
         return ft.Container(
@@ -409,41 +443,49 @@ def install(ctx: AppContext) -> None:
             ),
         )
 
-    def render_orders():
+    def order_matches(order, query):
+        created = datetime.fromisoformat(order["created"]).strftime("%d/%m/%Y") if order.get("created") else ""
+        return matches_search(f"{order['name']} {created}", query)
+
+    def drawer_note(message):
+        return ft.Container(padding=ft.Padding.symmetric(horizontal=16, vertical=8), content=ui.text(
+            message, size=13, italic=True, color=ft.Colors.ON_SURFACE_VARIANT))
+
+    def render_order_tiles():
+        """Liste des commandes seule : la recherche la refait sans toucher au reste du menu."""
         order_summaries.clear()
-        controls = drawer_header()
+        query = (order_search.value or "").strip() if order_search_box.visible else ""
+        archives = sum(bool(order.get("archived")) for order in ctx.orders.values())
+        archive_toggle.content = "Commandes actives" if ctx.state["show_archived"] else f"Archives ({archives})"
+        archive_toggle.visible = not query  # la recherche couvre actives et archivées
+        orders_label.value = "Résultats" if query else (
+            "Commandes archivées" if ctx.state["show_archived"] else "Commandes")
 
-        if not ctx.orders:
-            controls.append(ft.Container(
-                padding=ft.Padding.symmetric(horizontal=16, vertical=8),
-                content=ui.text(
-                    "Aucune commande pour l'instant.\n"
-                    "Appuyez sur « Nouvelle commande » pour commencer.",
-                    size=13, italic=True, color=ft.Colors.ON_SURFACE_VARIANT,
-                ),
-            ))
-
+        tiles = []
         # Les plus récentes en premier (le dict garde l'ordre de création)
         for order_id in reversed(list(ctx.orders)):
             order = ctx.orders[order_id]
-            if bool(order.get("archived")) != ctx.state["show_archived"]:
-                continue
-            controls.append(order_tile(order_id, order))
+            archived = bool(order.get("archived"))
+            if query:
+                if order_matches(order, query):
+                    tiles.append(order_tile(order_id, order, show_archived_mark=archived))
+            elif archived == ctx.state["show_archived"]:
+                tiles.append(order_tile(order_id, order))
 
-        archives = sum(bool(order.get("archived")) for order in ctx.orders.values())
-        controls.insert(7, ft.Container(padding=8, content=ft.Row([
-            ft.TextButton(content="Commandes actives" if ctx.state["show_archived"] else f"Archives ({archives})",
-                icon=ft.Icons.ARCHIVE_OUTLINED, on_click=show_order_group, expand=True),
-        ])))
-        controls.extend([
-            ft.Divider(),
-            ft.ListTile(title=ui.text("Sauvegarder / restaurer"), leading=ft.Icon(ft.Icons.BACKUP_OUTLINED),
-                        on_click=ctx.open_backup_view),
-        ])
-        if not any(bool(order.get("archived")) == ctx.state["show_archived"] for order in ctx.orders.values()):
-            controls.append(ft.Container(padding=16, content=ui.text(
-                "Aucune commande archivée." if ctx.state["show_archived"] else "Aucune commande active.", color=ui.MUTED)))
-        drawer.controls = controls
+        if not ctx.orders:
+            tiles.append(drawer_note("Aucune commande pour l'instant.\n"
+                                     "Appuyez sur « Nouvelle commande » pour commencer."))
+        elif not tiles:
+            tiles.append(drawer_note(
+                "Aucune commande ne correspond." if query
+                else "Aucune commande archivée." if ctx.state["show_archived"] else "Aucune commande active."))
+        orders_column.controls = tiles
+
+    def render_orders():
+        # La recherche n'apparaît que quand la liste devient longue.
+        order_search_box.visible = len(ctx.orders) >= ORDER_SEARCH_MIN
+        render_order_tiles()
+        drawer.controls = drawer_header() + drawer_settings()
 
     ctx.render_orders = render_orders
     ctx.update_order_summary = update_order_summary  # partagé avec view_cart

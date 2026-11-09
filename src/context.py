@@ -41,7 +41,7 @@ class AppContext:
         self.quantity_drafts = {}
         self.catalogue_grids = []
         self.catalogue_rows = {}
-        self.catalogue_badges = {}
+        self.catalogue_cards = {}  # clé d'article → éléments de sa carte (view_catalogue)
         self.favorite_buttons = {}
         self.window = {"layout": ui.WindowLayout(getattr(page, "width", None) or 390,
                                                   getattr(page, "height", None) or 800)}

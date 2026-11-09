@@ -95,7 +95,8 @@ class ProductivityTests(StorageTest):
         self.add()
         self.choose("Matériel")
         self.add("Écran démo")
-        self.add("Écran démo")
+        self.page.find(ft.SnackBar, action="Annuler").on_action(None)  # annule l'ajout
+        self.add("Écran démo")  # le bouton d'ajout est revenu : on ajoute à nouveau
         prefs, _ = storage.load_prefs([])
         self.assertEqual(len(prefs["recent"]), 2)
         self.assertEqual(prefs["recent"][1], "XL:Écran principal")
@@ -103,29 +104,101 @@ class ProductivityTests(StorageTest):
         self.choose(config_mod.ALL_CATALOGUES)
         self.mode("recent")
         self.page.find(ft.Text, value="Articles récents")
-        self.page.find(ft.IconButton, tooltip="Ajouter au panier : Écran démo")
+        self.page.find(ft.TextField, tooltip="Quantité dans la commande : Écran démo")
         with self.assertRaises(AssertionError):
             self.page.find(ft.IconButton, tooltip="Ajouter au panier : Installation")
 
     def test_quantity_badge_and_compact_total_follow_basket_edits_and_undo(self):
         self.add()
-        self.page.find(ft.Text, value="Déjà 1 dans la commande", visible=True)
+        self.page.find(ft.Text, value="Dans la commande", visible=True)
+        in_order = self.page.find(ft.TextField, tooltip="Quantité dans la commande : Écran principal")
+        self.assertEqual(in_order.value, "1")
         self.page.find(ft.TextButton, tooltip="Voir le panier").on_click(None)
         quantity = self.page.find(ft.TextField, tooltip="Quantité")
         quantity.value = "4"
         quantity.on_change(None)
         self.page.select_tab(0)
-        self.page.find(ft.Text, value="Déjà 4 dans la commande", visible=True)
+        self.assertEqual(in_order.value, "4")
         self.page.select_tab(1)
         self.page.find(ft.IconButton, tooltip="Retirer du panier").on_click(None)
         self.page.find(ft.SnackBar, action="Annuler").on_action(None)
         self.page.select_tab(0)
-        self.page.find(ft.Text, value="Déjà 4 dans la commande", visible=True)
+        self.assertEqual(in_order.value, "4")
+        self.page.find(ft.Text, value="Dans la commande", visible=True)
+
+    def test_add_resets_quantity_and_can_be_undone(self):
+        field = self.page.find(ft.TextField, tooltip="Quantité à ajouter : Écran principal")
+        field.value = "5"
+        field.on_change(SimpleNamespace(control=field))
+        self.add()
+        self.assertEqual(field.value, "1")  # le prochain ajout ne reprend pas 5
+        self.assertEqual(storage.load_orders()[0]["demo"]["items"]["XL:Écran principal"]["quantite"], 5)
+        self.page.find(ft.SnackBar, action="Annuler").on_action(None)
+        self.assertNotIn("XL:Écran principal", storage.load_orders()[0]["demo"]["items"])
+        self.page.find(ft.IconButton, tooltip="Ajouter au panier : Écran principal")  # bouton d'ajout revenu
+
+    def test_in_order_stepper_edits_the_order_line(self):
+        self.add()
+        key = "XL:Écran principal"
+        self.page.find(ft.IconButton, tooltip="Ajouter un : Écran principal").on_click(None)
+        self.assertEqual(storage.load_orders()[0]["demo"]["items"][key]["quantite"], 2)
+        field = self.page.find(ft.TextField, tooltip="Quantité dans la commande : Écran principal")
+        self.assertEqual(field.value, "2")
+        field.value = "6"
+        field.on_change(None)
+        self.assertEqual(storage.load_orders()[0]["demo"]["items"][key]["quantite"], 6)
+        field.value = ""
+        field.on_blur(None)  # saisie vide : quantité précédente remise
+        self.assertEqual(field.value, "6")
+        self.page.select_tab(1)
+        self.assertEqual(self.page.find(ft.TextField, tooltip="Quantité").value, "6")  # panier à jour
+        self.page.select_tab(0)
+        field.value = "1"
+        field.on_change(None)
+        self.page.find(ft.IconButton, tooltip="Retirer un : Écran principal").on_click(None)
+        self.assertNotIn(key, storage.load_orders()[0]["demo"]["items"])  # − à 1 : ligne retirée
+        self.page.find(ft.SnackBar, action="Annuler").on_action(None)
+        self.assertEqual(storage.load_orders()[0]["demo"]["items"][key]["quantite"], 1)
+
+    def test_search_hides_cards_without_rebuilding_and_matches_category(self):
+        self.choose(config_mod.ALL_CATALOGUES)
+        card_field = self.page.find(ft.TextField, tooltip="Quantité à ajouter : Installation")
+        search = self.page.find(ft.TextField, label="Rechercher")
+        search.value = "pose"  # catégorie « Pose » de « Installation »
+        asyncio.run(search.on_change())
+        self.assertIs(self.page.find(ft.TextField, tooltip="Quantité à ajouter : Installation"), card_field)
+        ctx = self.page.data["ctx"]
+        visible = [part["item"]["Nom_Article"] for part in ctx.catalogue_cards.values() if part["card"].visible]
+        self.assertEqual(visible, ["Installation"])
+        self.page.find(ft.Text, value="1 article(s) · 1 catégorie(s)")
+        search.value = "introuvable"
+        asyncio.run(search.on_change())
+        self.assertFalse(any(part["card"].visible for part in ctx.catalogue_cards.values()))
+        self.page.find(ft.Text, value="Aucun article ne correspond.")
+
+    def test_only_the_last_search_keystroke_filters(self):
+        ctx = self.page.data["ctx"]
+        search = self.page.find(ft.TextField, label="Rechercher")
+        scroll = ft.ListView.scroll_to  # AsyncMock posé dans setUp
+        scroll.reset_mock()
+
+        async def type_quickly():
+            letters = []
+            for value in ["e", "ec", "ecr"]:
+                search.value = value
+                letters.append(asyncio.create_task(search.on_change()))
+                await asyncio.sleep(0)
+            await asyncio.gather(*letters)
+
+        asyncio.run(type_quickly())
+        self.assertEqual(scroll.await_count, 1)  # un seul filtrage, après la dernière lettre
+        visible = {part["item"]["Nom_Article"] for part in ctx.catalogue_cards.values() if part["card"].visible}
+        self.assertEqual(visible, {"Écran principal"})
 
     def test_order_and_item_notes_persist_and_are_in_clipboard_text(self):
         self.add()
         self.page.select_tab(1)
-        self.page.find(ft.IconButton, tooltip="Remarques de la commande").on_click(None)
+        self.page.find(ft.TextButton, tooltip="Remarques de la commande").on_click(None)
         self.page.find(ft.TextField, label="Remarques").value = "Livraison groupée\nSalle 2"
         self.page.find(ft.Button, content="Enregistrer").on_click(None)
         self.page.find(ft.IconButton, tooltip="Remarque : Écran principal").on_click(None)
@@ -173,7 +246,7 @@ class ProductivityTests(StorageTest):
     def test_note_save_failure_keeps_previous_data_and_dialog_open(self):
         self.add()
         self.page.select_tab(1)
-        self.page.find(ft.IconButton, tooltip="Remarques de la commande").on_click(None)
+        self.page.find(ft.TextButton, tooltip="Remarques de la commande").on_click(None)
         field = self.page.find(ft.TextField, label="Remarques")
         field.value = "À ne pas enregistrer"
         with patch.object(storage, "save_orders", side_effect=OSError("test")):
@@ -187,6 +260,53 @@ class ProductivityTests(StorageTest):
         self.assertNotIn("archived", storage.load_orders()[0]["demo"])
         self.assertEqual(storage.load_orders()[1], "demo")
         self.menu("Archiver")
+
+    def drawer_texts(self):
+        """Textes du menu dans l'ordre d'affichage (titres et libellés)."""
+        texts, pending = [], list(reversed(self.page.drawer.controls))
+        while pending:
+            value = pending.pop()
+            if isinstance(value, ft.Text):
+                texts.append(value.value)
+                continue
+            children = []
+            for name in ("content", "leading", "title", "controls"):
+                child = getattr(value, name, None)
+                children.extend(child if isinstance(child, list) else [child] if child is not None else [])
+            pending.extend(reversed([c for c in children if isinstance(c, ft.BaseControl)]))
+        return texts
+
+    def test_menu_lists_orders_before_settings(self):
+        texts = self.drawer_texts()
+        self.assertLess(texts.index("Démo"), texts.index("Réglages"))
+        self.assertLess(texts.index("Réglages"), texts.index("Gérer les catalogues"))
+        self.assertIn("Sauvegarder / restaurer", texts[texts.index("Réglages"):])
+
+    def test_order_search_appears_for_long_lists_and_finds_archived_orders(self):
+        search = self.page.find(ft.TextField, label="Rechercher une commande")
+        self.assertFalse(self.page.data["ctx"].drawer.controls[2].visible)  # 1 commande : pas de recherche
+        orders = {f"o{i}": {"name": f"Salle {i}", "created": "2026-11-03T12:00", "items": {}, "photos": []}
+                  for i in range(6)}
+        orders["o0"]["name"] = "Cabinet Dupont"
+        orders["o0"]["archived"] = True
+        storage.save_orders(orders, "o5")
+        self.start()
+        search = self.page.find(ft.TextField, label="Rechercher une commande")
+        self.assertTrue(self.page.drawer.controls[2].visible)
+        search.value = "dupont"
+        asyncio.run(search.on_change())
+        self.assertIn("Cabinet Dupont", self.drawer_texts())
+        self.assertNotIn("Salle 3", self.drawer_texts())
+        self.page.find(ft.Text, value="03/11 · 0 art. · 0,00 € · archivée")
+        search.value = "rien"
+        asyncio.run(search.on_change())
+        self.assertIn("Aucune commande ne correspond.", self.drawer_texts())
+
+    def test_delete_dialog_offers_archive_instead(self):
+        asyncio.run(self.menu("Supprimer").on_click(None))
+        asyncio.run(self.page.find(ft.TextButton, content="Archiver plutôt").on_click(None))
+        orders, _, _ = storage.load_orders()
+        self.assertTrue(orders["demo"]["archived"])  # gardée, seulement archivée
 
     def open_backup(self):
         tile = self.page.find(ft.ListTile, title=self.page.find(ft.Text, value="Sauvegarder / restaurer"))
@@ -252,7 +372,7 @@ class ProductivityTests(StorageTest):
 
     def test_note_draft_survives_fold_and_window_resize(self):
         self.page.select_tab(1)
-        self.page.find(ft.IconButton, tooltip="Remarques de la commande").on_click(None)
+        self.page.find(ft.TextButton, tooltip="Remarques de la commande").on_click(None)
         field = self.page.find(ft.TextField, label="Remarques")
         field.value = "Brouillon conservé\nDeuxième ligne"
         for width, height in [(320, 800), (900, 900), (600, 480)]:

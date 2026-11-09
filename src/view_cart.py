@@ -36,6 +36,15 @@ def install(ctx: AppContext) -> None:
         ctx.refresh_cart_state()
         ctx.refresh()
 
+    def set_line_quantity(id_art, qty):
+        """Quantité d'une ligne fixée depuis le catalogue (champ « − 3 + » d'un article)."""
+        items = ctx.cart()
+        if id_art not in items or qty <= 0 or qty == items[id_art]["quantite"]:
+            return
+        items[id_art]["quantite"] = qty
+        ctx.persist()
+        ctx.refresh_cart_state()
+
     def remove_cart_line(id_art):
         """Retire une ligne du panier, avec « Annuler » dans le message pendant 8 secondes."""
         order_id = ctx.state["current"]
@@ -170,7 +179,7 @@ def install(ctx: AppContext) -> None:
                                            tooltip="Retirer du panier",
                                            width=48, height=48,
                                            on_click=lambda e, i=id_art: remove_cart_line(i))
-                btn_note = ft.IconButton(icon=ft.Icons.NOTES, width=48, height=48,
+                btn_note = ft.IconButton(icon=ft.Icons.EDIT_NOTE, width=48, height=48,
                     icon_color=ui.PRIMARY if item.get("note") else ui.MUTED,
                     tooltip=f"Remarque : {item['Nom']}", on_click=lambda e, k=id_art: ctx.edit_notes(key=k))
 
@@ -224,7 +233,8 @@ def install(ctx: AppContext) -> None:
     ], spacing=12))
     notes_preview = ui.text("", size=12, color=ui.MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, visible=False)
     basket_heading = ui.heading("Votre panier", icon=ft.Icons.SHOPPING_BAG_OUTLINED,
-        trailing=ft.IconButton(icon=ft.Icons.NOTES, tooltip="Remarques de la commande", width=48, height=48,
+        # Bouton avec libellé : l'icône seule ressemblait à un menu (≡).
+        trailing=ft.TextButton(content="Remarques", icon=ft.Icons.EDIT_NOTE, tooltip="Remarques de la commande",
                                on_click=lambda e: ctx.edit_notes(e)))
     content_panier = ft.Column([
         basket_heading, cart_info, notes_preview, cart_listview, basket_footer,
@@ -232,6 +242,8 @@ def install(ctx: AppContext) -> None:
 
     # Partagé avec main() et les autres écrans
     ctx.change_qty_field = change_qty_field
+    ctx.update_cart_qty = update_cart_qty  # partagé avec view_catalogue (« − 3 + » d'un article)
+    ctx.set_line_quantity = set_line_quantity
     ctx.render_cart = render_cart
     ctx.update_cart_summary = update_cart_summary
     ctx.cart_listview = cart_listview

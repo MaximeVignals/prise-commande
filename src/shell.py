@@ -171,10 +171,12 @@ def install(ctx: AppContext) -> None:
         # spans based on this pane's width for master/detail catalogue cards.
         for grid in ctx.catalogue_grids:
             columns = 2 if pane_width >= 680 else 1
-            for i, card in enumerate(grid.controls):
+            # Only the cards the search leaves visible count for the last-row rule.
+            cards = [card for card in grid.controls if card.visible]
+            for i, card in enumerate(cards):
                 # Give an odd final article the full row instead of leaving
                 # half a grid row empty. Its controls then fit on one line.
-                full_width = columns == 1 or (len(grid.controls) % 2 and i == len(grid.controls) - 1)
+                full_width = columns == 1 or (len(cards) % 2 and i == len(cards) - 1)
                 card.col = 12 if full_width else 6
                 card_width = pane_width if full_width else (pane_width - 8) / 2
                 compact, wide = ctx.catalogue_rows[id(card)]
@@ -284,23 +286,13 @@ def install(ctx: AppContext) -> None:
 
 
 def install_appbar(ctx: AppContext) -> None:
-    def toggle_theme(e=None):
-        dark = ctx.page.theme_mode == ft.ThemeMode.DARK or (
-            ctx.page.theme_mode == ft.ThemeMode.SYSTEM
-            and getattr(ctx.page, "platform_brightness", None) == ft.Brightness.DARK
-        )
-        ctx.page.theme_mode = ft.ThemeMode.LIGHT if dark else ft.ThemeMode.DARK
-        theme_button.icon = ft.Icons.DARK_MODE_OUTLINED if dark else ft.Icons.LIGHT_MODE_OUTLINED
-
-    theme_button = ft.IconButton(
-        icon=ft.Icons.CONTRAST, tooltip="Changer le thème clair / sombre",
-        width=48, height=48, on_click=toggle_theme,
-    )
+    # Le thème clair / sombre se change dans ☰ › Réglages : la barre garde la place
+    # pour le nom de la commande.
     ctx.page.appbar = ft.AppBar(
         leading=ft.IconButton(icon=ft.Icons.MENU, tooltip="Commandes", on_click=ctx.open_drawer,
                               width=48, height=48),
         title=ft.Column([ctx.appbar_title, ctx.order_info], spacing=2, tight=True),
-        actions=[theme_button, ft.IconButton(
+        actions=[ft.IconButton(
             icon=ft.Icons.ADD, tooltip="Nouvelle commande", width=48, height=48,
             on_click=ctx.create_order_dialog,
         )],
