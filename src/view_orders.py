@@ -2,21 +2,24 @@ import copy
 import shutil
 from datetime import datetime
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, storage
-    from .text import default_order_name, fmt_eur, matches_search
+    from .text import default_order_name, fmt_eur, matches_search, describe_error
     from .storage import photos_dir
     from .orders import duplicate_order, order_count, order_total
     from .context import AppContext
 else:
     import ui
     import storage
-    from text import default_order_name, fmt_eur, matches_search
+    from text import default_order_name, fmt_eur, matches_search, describe_error
     from storage import photos_dir
     from orders import duplicate_order, order_count, order_total
     from context import AppContext
+
+log = logging.getLogger("prise_commande")
 
 
 EMPTY_START = "__vide__"
@@ -127,13 +130,14 @@ def install(ctx: AppContext) -> None:
                 new_id, duplicate = duplicate_order(order_id, ctx.orders[order_id], name, ctx.orders)
                 storage.save_orders({**ctx.orders, new_id: duplicate}, new_id)
             except OSError as err:
+                log.exception("Erreur affichée à l'utilisateur")
                 if new_id:
                     folder = photos_dir(new_id)
                     for path in folder.glob("*"):
                         path.unlink()
                     if folder.exists():
                         folder.rmdir()
-                ctx.show_snack(f"Duplication impossible : {err}")
+                ctx.show_snack(f"Duplication impossible : {describe_error(err)}")
                 return
             ctx.orders[new_id] = duplicate
             ctx.state.update(current=new_id, show_archived=False)
@@ -159,7 +163,8 @@ def install(ctx: AppContext) -> None:
         try:
             storage.save_orders(updated, selected)
         except OSError as err:
-            ctx.show_snack(f"Archivage impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack(f"Archivage impossible : {describe_error(err)}")
             ctx.refresh()
             return
         ctx.orders.clear()
@@ -192,11 +197,12 @@ def install(ctx: AppContext) -> None:
             try:
                 storage.save_orders(ctx.orders, ctx.state["current"])
             except OSError as err:
+                log.exception("Erreur affichée à l'utilisateur")
                 if previous is None:
                     target.pop(attribute, None)
                 else:
                     target[attribute] = previous
-                field.error = f"Enregistrement impossible : {err}"
+                field.error = f"Enregistrement impossible : {describe_error(err)}"
                 ctx.refresh()
                 return
             ctx.page.pop_dialog()

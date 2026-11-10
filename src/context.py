@@ -1,19 +1,22 @@
 import uuid
 from datetime import datetime
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, storage
     from .config import ALL_CATALOGUES, DEFAULT_CATALOGUE, DEFAULT_CATALOGUE_LABEL
-    from .text import default_order_name
+    from .text import default_order_name, describe_error
     from .catalogue import build_catalogue, catalogues_of
 else:
     import ui
     import storage
     from config import ALL_CATALOGUES, DEFAULT_CATALOGUE, DEFAULT_CATALOGUE_LABEL
-    from text import default_order_name
+    from text import default_order_name, describe_error
     from catalogue import build_catalogue, catalogues_of
+
+log = logging.getLogger("prise_commande")
 
 
 class AppContext:
@@ -101,13 +104,15 @@ class AppContext:
         try:
             storage.save_orders(self.orders, self.state["current"])
         except OSError as err:
-            self.show_snack(f"⚠️ Sauvegarde impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            self.show_snack(f"⚠️ Sauvegarde impossible : {describe_error(err)}")
 
     def persist_prefs(self):
         try:
             storage.save_prefs(self.prefs)
         except OSError as err:
-            self.show_snack(f"⚠️ Sauvegarde des réglages impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            self.show_snack(f"⚠️ Sauvegarde des réglages impossible : {describe_error(err)}")
 
     # --- COMPOSANTS UI ---
     def dialog_width(self):

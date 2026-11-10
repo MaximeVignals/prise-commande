@@ -2,10 +2,12 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, backup, storage
+    from .text import describe_error
     from .storage import storage_dir
     from .config import BACKUPS_DIRNAME, RECOVERY_BACKUP_PATTERN
     from .import_screen import request_restore
@@ -18,6 +20,9 @@ else:
     from config import BACKUPS_DIRNAME, RECOVERY_BACKUP_PATTERN
     from import_screen import request_restore
     from context import AppContext
+    from text import describe_error
+
+log = logging.getLogger("prise_commande")
 
 
 def install(ctx: AppContext) -> None:
@@ -50,11 +55,41 @@ def install(ctx: AppContext) -> None:
                 await asyncio.to_thread(target.write_bytes, data)
             backup_status.value = "Sauvegarde enregistrée." if chosen else "Enregistrement annulé."
         except Exception as err:
-            backup_status.value = f"Sauvegarde impossible : {err}"
+            log.exception("Erreur affichée à l'utilisateur")
+            backup_status.value = f"Sauvegarde impossible : {describe_error(err)}"
         finally:
             export_backup_btn.disabled = restore_backup_btn.disabled = False
             recovery_backup_btn.disabled = not any((storage_dir() / BACKUPS_DIRNAME).glob(RECOVERY_BACKUP_PATTERN))
             backup_progress.visible = False
+            ctx.refresh()
+
+    async def export_journal(e=None):
+        export_journal_btn.disabled = True
+        backup_status.value = "Préparation du journal…"
+        ctx.refresh()
+        try:
+            def read_journal():
+                current = storage_dir() / "journal.log"
+                parts = [path.read_bytes() for path in (current.with_name("journal.log.1"), current) if path.exists()]
+                return b"".join(parts)
+            data = await asyncio.to_thread(read_journal)
+            if not data.strip():
+                backup_status.value = "Le journal est vide."
+                return
+            chosen = await ctx.file_picker.save_file(dialog_title="Enregistrer le journal",
+                file_name="journal-prise-commande.txt",
+                file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["txt"], src_bytes=data)
+            if chosen and not ctx.is_mobile and not ctx.page.web:
+                target = Path(chosen)
+                if target.suffix.lower() != ".txt":
+                    target = target.with_suffix(".txt")
+                await asyncio.to_thread(target.write_bytes, data)
+            backup_status.value = "Journal enregistré." if chosen else "Enregistrement annulé."
+        except Exception as err:
+            log.exception("Export du journal impossible")
+            backup_status.value = f"Export du journal impossible : {describe_error(err)}"
+        finally:
+            export_journal_btn.disabled = False
             ctx.refresh()
 
     async def restore_from_view(e=None):
@@ -72,6 +107,8 @@ def install(ctx: AppContext) -> None:
                                             on_click=restore_from_view)
     recovery_backup_btn = ft.TextButton(content="Exporter la dernière copie de secours", icon=ft.Icons.HISTORY,
         on_click=export_recovery, disabled=not any((storage_dir() / BACKUPS_DIRNAME).glob(RECOVERY_BACKUP_PATTERN)))
+    export_journal_btn = ft.OutlinedButton(content="Exporter le journal", icon=ft.Icons.DESCRIPTION_OUTLINED,
+                                           on_click=export_journal)
     backup_view = ft.View(route="/sauvegarde", padding=16,
         appbar=ft.AppBar(title=ui.text("Sauvegarde et restauration")),
         controls=[ft.SafeArea(expand=True, content=ft.ListView(spacing=16, controls=[
@@ -88,6 +125,14 @@ def install(ctx: AppContext) -> None:
                         "dans le dossier « sauvegardes » de l'application.", color=ui.MUTED),
                 restore_backup_btn,
                 recovery_backup_btn,
+            ], spacing=16, tight=True)),
+            ui.card(ft.Column([
+                ui.heading("En cas de problème", "Un fichier texte à transmettre pour comprendre une erreur",
+                           ft.Icons.BUG_REPORT_OUTLINED),
+                ui.text("Le journal contient des messages techniques. Il peut citer des noms de fichiers ou d'articles : "
+                        "vérifiez-le avant de l'envoyer.",
+                        color=ui.MUTED),
+                export_journal_btn,
             ], spacing=16, tight=True)),
             backup_progress, backup_status,
         ]))])

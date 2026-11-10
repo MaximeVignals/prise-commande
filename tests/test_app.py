@@ -19,6 +19,7 @@ from src import import_screen
 from src import orders as orders_mod
 from src import photos as photos_mod
 from src import text as text_mod
+from src import errors
 from src import ui
 from src import view_photos
 
@@ -34,6 +35,7 @@ class StorageTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {"FLET_APP_STORAGE_DATA": str(self.storage)})
         self.env.start()
         self.addCleanup(self.env.stop)
+        self.addCleanup(errors.reset_for_tests)  # app.main() installe le filet et le journal
 
 
 class CatalogueTests(StorageTest):

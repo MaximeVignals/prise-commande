@@ -1,7 +1,10 @@
+import logging
+
 import flet as ft
 
 if __package__:
-    from . import ui
+    from . import ui, errors
+    from .text import describe_error
     from .catalogue import load_catalogue
     from .import_screen import show_import_screen
     from .context import AppContext
@@ -9,6 +12,8 @@ if __package__:
     from . import shell
 else:
     import ui
+    import errors
+    from text import describe_error
     from catalogue import load_catalogue
     from import_screen import show_import_screen
     from context import AppContext
@@ -21,6 +26,9 @@ else:
     import view_backup
     import view_templates
     import shell
+
+
+log = logging.getLogger("prise_commande")
 
 
 # --- APPLICATION PRINCIPALE FLET ---
@@ -36,9 +44,33 @@ def reset_page(page):
     page.appbar = page.drawer = None
 
 
+def show_startup_error(page, err):
+    """Écran de repli quand le démarrage échoue : message court + bouton pour réessayer."""
+    reset_page(page)
+    page.add(ft.SafeArea(expand=True, content=ft.Column(
+        [ft.Text("Démarrage impossible", size=22, weight=ft.FontWeight.BOLD),
+         ft.Text(describe_error(err)),
+         ft.FilledButton(content="Réessayer", on_click=lambda e: main(page))],
+        alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16)))
+    page.update()
+
+
 def main(page: ft.Page):
+    errors.setup_logging()
+    errors.install()
     reset_page(page)
     page.title = "Prise de Commande"
+    try:
+        start(page)
+    except Exception as err:
+        log.exception("Démarrage impossible")
+        try:
+            show_startup_error(page, err)
+        except Exception:
+            log.exception("Écran de repli impossible")
+
+
+def start(page: ft.Page):
     ui.configure_page(page)
 
     excel_items = load_catalogue()

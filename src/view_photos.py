@@ -5,20 +5,23 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui
-    from .text import norm_text
+    from .text import norm_text, describe_error
     from .storage import photo_path, photos_dir, storage_dir
     from .photos import build_photos_zip, photo_export_names, photos_summary, safe_filename
     from .context import AppContext
 else:
     import ui
-    from text import norm_text
+    from text import norm_text, describe_error
     from storage import photo_path, photos_dir, storage_dir
     from photos import build_photos_zip, photo_export_names, photos_summary, safe_filename
     from context import AppContext
+
+log = logging.getLogger("prise_commande")
 
 try:
     # Appareil photo intégré (Android) : extension officielle flet-camera.
@@ -205,7 +208,8 @@ def install(ctx: AppContext) -> None:
                 with_data=ctx.page.web,
             )
         except Exception as err:  # sélecteur indisponible
-            ctx.show_snack(f"Impossible d'ouvrir la galerie : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack("Impossible d'ouvrir la galerie.")
             ctx.refresh()
             return
         if not files:
@@ -253,7 +257,8 @@ def install(ctx: AppContext) -> None:
                 text="\n".join(photos_summary(order, names)),
             )
         except Exception as err:
-            ctx.show_snack(f"Partage impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack(f"Partage impossible : {describe_error(err)}")
             ctx.refresh()
 
     async def save_photos_zip(e=None):
@@ -272,7 +277,8 @@ def install(ctx: AppContext) -> None:
                 src_bytes=data,
             )
         except Exception as err:
-            ctx.show_snack(f"Enregistrement impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack(f"Enregistrement impossible : {describe_error(err)}")
             ctx.refresh()
             return
         if not chosen:
@@ -285,7 +291,8 @@ def install(ctx: AppContext) -> None:
             try:
                 target.write_bytes(data)
             except OSError as err:
-                ctx.show_snack(f"Enregistrement impossible : {err}")
+                log.exception("Erreur affichée à l'utilisateur")
+                ctx.show_snack(f"Enregistrement impossible : {describe_error(err)}")
                 ctx.refresh()
                 return
             chosen = str(target)
@@ -354,9 +361,10 @@ def install(ctx: AppContext) -> None:
             back = next((c for c in cameras if c.lens_direction == fc.CameraLensDirection.BACK), cameras[0])
             await cam.initialize(back, fc.ResolutionPreset.HIGH, enable_audio=False)
         except Exception as err:
+            log.exception("Erreur affichée à l'utilisateur")
             camera_state["cam"] = None
             await ctx.page.push_route("/")
-            ctx.show_snack(f"Appareil photo indisponible ({err}). Utilisez « Importer ».")
+            ctx.show_snack("Appareil photo indisponible. Utilisez « Importer ».")
             ctx.refresh()
 
     async def take_photo(e=None):
@@ -366,7 +374,8 @@ def install(ctx: AppContext) -> None:
         try:
             data = await cam.take_picture()
         except Exception as err:
-            ctx.show_snack(f"Photo impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack(f"Photo impossible : {describe_error(err)}")
             ctx.refresh()
             return
         photo = add_photo_file(order_id, data=data, ext=".jpg")

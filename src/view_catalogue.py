@@ -1,12 +1,13 @@
 import asyncio
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, storage
     from .ui import get_category_icon
     from .config import ALL_CATALOGUES
-    from .text import fmt_eur, matches_search
+    from .text import fmt_eur, matches_search, describe_error
     from .catalogue import categories_of
     from .context import AppContext
 else:
@@ -14,9 +15,11 @@ else:
     import storage
     from ui import get_category_icon
     from config import ALL_CATALOGUES
-    from text import fmt_eur, matches_search
+    from text import fmt_eur, matches_search, describe_error
     from catalogue import categories_of
     from context import AppContext
+
+log = logging.getLogger("prise_commande")
 
 
 # Pause après la dernière lettre tapée avant de filtrer : taper « ecran » ne filtre
@@ -383,8 +386,9 @@ def install(ctx: AppContext) -> None:
         try:
             storage.save_prefs(ctx.prefs)
         except OSError as err:
+            log.exception("Erreur affichée à l'utilisateur")
             ctx.prefs["favorites"] = previous
-            ctx.show_snack(f"Favori non enregistré : {err}")
+            ctx.show_snack(f"Favori non enregistré : {describe_error(err)}")
             ctx.refresh()
             return
         if browse_mode.selected == ["favorites"]:

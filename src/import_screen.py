@@ -3,10 +3,12 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, backup
+    from .text import describe_error
     from .config import CATALOGUE_COLUMNS
     from .storage import storage_dir
     from .catalogue import CatalogueError, install_catalogue, parse_catalogue, sample_catalogue_path
@@ -16,6 +18,9 @@ else:
     from config import CATALOGUE_COLUMNS
     from storage import storage_dir
     from catalogue import CatalogueError, install_catalogue, parse_catalogue, sample_catalogue_path
+    from text import describe_error
+
+log = logging.getLogger("prise_commande")
 
 
 async def pick_catalogue_file(file_picker):
@@ -62,7 +67,8 @@ async def request_restore(page, picker, on_done):
         data = file.bytes if file.bytes is not None else Path(file.path).read_bytes()
         snapshot = await asyncio.to_thread(backup.inspect_backup, data, parse_catalogue)
     except Exception as err:
-        report(f"Restauration impossible : {err}")
+        log.exception("Erreur affichée à l'utilisateur")
+        report(f"Restauration impossible : {describe_error(err)}")
         return
 
     async def confirm(e=None):
@@ -138,11 +144,13 @@ def show_import_screen(page):
                 return  # annulé
             _, skipped = install_catalogue(*picked)
         except (CatalogueError, OSError) as err:
-            error_text.value = f"Import impossible : {err}"
+            log.exception("Erreur affichée à l'utilisateur")
+            error_text.value = f"Import impossible : {describe_error(err)}"
             page.update()
             return
         except Exception as err:  # sélecteur indisponible
-            error_text.value = f"Impossible d'ouvrir le sélecteur de fichiers : {err}"
+            log.exception("Erreur affichée à l'utilisateur")
+            error_text.value = "Impossible d'ouvrir le sélecteur de fichiers."
             page.update()
             return
         start_app(skipped)
@@ -152,7 +160,8 @@ def show_import_screen(page):
         try:
             _, skipped = install_catalogue(path.read_bytes(), path.suffix)
         except (CatalogueError, OSError) as err:
-            error_text.value = f"Catalogue d'exemple illisible : {err}"
+            log.exception("Erreur affichée à l'utilisateur")
+            error_text.value = f"Catalogue d'exemple illisible : {describe_error(err)}"
             page.update()
             return
         start_app(skipped)

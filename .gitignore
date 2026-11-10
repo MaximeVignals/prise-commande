@@ -53,3 +53,6 @@ venv/
 .mcp.json
 CLAUDE.md
 CLAUDE.local.md
+
+# Journal de l'app (peut citer des noms de fichiers ou d'articles)
+journal.log*

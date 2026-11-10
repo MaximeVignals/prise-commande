@@ -1,5 +1,6 @@
 # Utilitaires de texte et de prix (sans dépendance vers le reste de l'app).
 
+import json
 import math
 import re
 import unicodedata
@@ -67,3 +68,19 @@ def matches_search(name, query):
 
 def default_order_name():
     return f"Commande du {datetime.now().strftime('%d/%m %H:%M')}"
+
+
+def describe_error(err):
+    """Message court en français pour une erreur affichée à l'utilisateur (le détail va dans le journal).
+    Les erreurs de validation de l'app (CatalogueError, ValueError) sont déjà rédigées en français : conservées."""
+    import errno
+    if isinstance(err, OSError):
+        reasons = {errno.ENOSPC: "Espace de stockage insuffisant", errno.EACCES: "Accès refusé",
+                   errno.EPERM: "Accès refusé", errno.ENOENT: "Fichier introuvable",
+                   errno.EROFS: "Stockage en lecture seule"}
+        return reasons.get(err.errno, "Erreur d'accès au fichier")
+    if isinstance(err, (UnicodeDecodeError, json.JSONDecodeError)):
+        return "Fichier illisible"
+    if isinstance(err, ValueError) or type(err).__name__ == "CatalogueError":
+        return str(err)
+    return "Erreur inattendue"

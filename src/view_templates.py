@@ -1,20 +1,23 @@
 # Modèles de commande : enregistrer une commande comme modèle, partir d'un modèle (avec vérification),
 # renommer / supprimer les modèles. Rien n'est envoyé ailleurs : tout reste dans le stockage de l'app.
 
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, templates, storage
     from .config import DEFAULT_CATALOGUE_LABEL
-    from .text import fmt_eur, matches_search
+    from .text import fmt_eur, matches_search, describe_error
     from .context import AppContext
 else:
     import ui
     import templates
     import storage
     from config import DEFAULT_CATALOGUE_LABEL
-    from text import fmt_eur, matches_search
+    from text import fmt_eur, matches_search, describe_error
     from context import AppContext
+
+log = logging.getLogger("prise_commande")
 
 STATUS_LABELS = {
     "missing": "Introuvable dans le catalogue actuel",
@@ -64,7 +67,8 @@ def install(ctx: AppContext) -> None:
             try:
                 templates.save_templates(data)
             except OSError as err:
-                field.error = f"Enregistrement impossible : {err}"
+                log.exception("Erreur affichée à l'utilisateur")
+                field.error = f"Enregistrement impossible : {describe_error(err)}"
                 ctx.refresh()
                 return
             saved["done"] = True
@@ -235,9 +239,10 @@ def install(ctx: AppContext) -> None:
                 # Enregistrement direct (pas ctx.persist) pour pouvoir annuler en cas d'erreur.
                 storage.save_orders(ctx.orders, order_id)
             except OSError as err:
+                log.exception("Erreur affichée à l'utilisateur")
                 del ctx.orders[order_id]
                 ctx.state["current"] = previous
-                pending_text.value = f"Enregistrement impossible : {err}"
+                pending_text.value = f"Enregistrement impossible : {describe_error(err)}"
                 ctx.refresh()
                 return
             created["done"] = True
@@ -300,7 +305,8 @@ def install(ctx: AppContext) -> None:
             try:
                 templates.save_templates(data)
             except OSError as err:
-                field.error = f"Enregistrement impossible : {err}"
+                log.exception("Erreur affichée à l'utilisateur")
+                field.error = f"Enregistrement impossible : {describe_error(err)}"
                 ctx.refresh()
                 return
             ctx.page.pop_dialog()
@@ -331,8 +337,9 @@ def install(ctx: AppContext) -> None:
             try:
                 templates.save_templates(data)
             except OSError as err:
+                log.exception("Erreur affichée à l'utilisateur")
                 show_manager()
-                ctx.show_snack(f"Suppression impossible : {err}")
+                ctx.show_snack(f"Suppression impossible : {describe_error(err)}")
                 ctx.refresh()
                 return
             show_manager()

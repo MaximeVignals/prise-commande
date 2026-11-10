@@ -1,9 +1,10 @@
+import logging
 import flet as ft
 
 if __package__:
     from . import ui, storage
     from .config import DEFAULT_CATALOGUE, DEFAULT_CATALOGUE_LABEL
-    from .text import fold, norm_text
+    from .text import fold, norm_text, describe_error
     from .catalogue import install_catalogue
     from .import_screen import pick_catalogue_file, skipped_summary
     from .context import AppContext
@@ -11,10 +12,12 @@ else:
     import ui
     import storage
     from config import DEFAULT_CATALOGUE, DEFAULT_CATALOGUE_LABEL
-    from text import fold, norm_text
+    from text import fold, norm_text, describe_error
     from catalogue import install_catalogue
     from import_screen import pick_catalogue_file, skipped_summary
     from context import AppContext
+
+log = logging.getLogger("prise_commande")
 
 
 def install(ctx: AppContext) -> None:
@@ -27,7 +30,8 @@ def install(ctx: AppContext) -> None:
         try:
             storage.save_prefs(updated)
         except OSError as err:
-            ctx.show_snack(f"⚠️ Modification du catalogue impossible : {err}")
+            log.exception("Erreur affichée à l'utilisateur")
+            ctx.show_snack(f"⚠️ Modification du catalogue impossible : {describe_error(err)}")
             ctx.refresh()
             return False
         ctx.prefs.clear()
@@ -189,10 +193,11 @@ def install(ctx: AppContext) -> None:
                 return  # annulé
             items, skipped = install_catalogue(*picked)
         except Exception as err:  # fichier invalide, illisible, ou sélecteur indisponible
+            log.exception("Erreur affichée à l'utilisateur")
             ctx.page.show_dialog(ft.AlertDialog(
                 scrollable=True,
                 title=ui.text("Import impossible"),
-                content=ui.text(f"{err}\n\nLe catalogue actuel est conservé.", selectable=True),
+                content=ui.text(f"{describe_error(err)}\n\nLe catalogue actuel est conservé.", selectable=True),
                 actions=[ft.TextButton(content="OK", on_click=lambda e: ctx.page.pop_dialog())],
             ))
             ctx.refresh()
